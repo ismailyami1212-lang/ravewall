@@ -1,0 +1,26 @@
+# What must never be uploaded to Vercel.
+#
+# This is not a git repository, so `.gitignore` is not consulted: the CLI uploads
+# the working directory and only honours this file. Without it, the local
+# in-process database (thousands of files), screenshots and the real `.env`
+# would be shipped to the build environment.
+
+# Secrets — the deployment gets its configuration from Vercel's env vars.
+.env
+.env.*
+!.env.example
+
+# Local in-process PostgreSQL and other scratch state
+.pglite/
+.smoke-data/
+data/
+coverage/
+
+# Build output is produced by `npm run build` on Vercel
+dist/
+
+# Not needed to build or run the deployment
+screenshots/
+src/test/
+vitest.config.ts
+*.log

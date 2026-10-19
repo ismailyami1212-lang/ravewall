@@ -1,0 +1,58 @@
+# Dependencies
+node_modules/
+
+# Build output
+dist/
+build/
+coverage/
+
+# Local environment — NEVER commit real credentials.
+# .env, .env.local and any other .env.<anything> are ignored, but the safe
+# .env.example template is tracked so contributors know what to fill in.
+.env
+.env.*
+!.env.example
+
+# Local PostgreSQL (PGlite) persistence used by `npm run dev`.
+.pglite/
+
+# Local database / smoke-test artifacts.
+data/
+.smoke-data/
+*.db
+*.sqlite
+*.sqlite3
+
+# Vercel project metadata (deployment state, not source).
+.vercel
+
+# Session secrets and temp tokens.
+.session-secret
+*.pem
+*.key
+*.p12
+*.pfx
+
+# Logs.
+*.log
+logs/
+
+# OS junk.
+.DS_Store
+Thumbs.db
+
+# Editor / IDE local state.
+.idea/
+.vscode/
+
+# Temporary files.
+tmp/
+temp/
+*.tmp
+*.swp
+*.swo
+*~
+
+# Generated QA artifacts (screenshots, baseline PNGs). Re-create with
+# `npm run screenshots` / `npm run smoke`; not part of the source tree.
+screenshots/
