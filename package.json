@@ -24,7 +24,8 @@
     "seed": "node scripts/seed-demo.mjs",
     "screenshots": "node scripts/screenshot.mjs",
     "smoke": "bash scripts/smoke.sh",
-    "verify": "npm run typecheck && npm run test && npm run build"
+    "verify": "npm run typecheck && npm run test && npm run build",
+    "activation-report": "node scripts/activation-report.mjs"
   },
   "dependencies": {
     "compression": "^1.7.5",
