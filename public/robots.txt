@@ -2,6 +2,10 @@ User-agent: *
 Allow: /
 Disallow: /api/
 Disallow: /dashboard
+Disallow: /clients
+Disallow: /team
+Disallow: /analytics
+Disallow: /account
 Disallow: /settings
 Disallow: /widgets
 Disallow: /setup

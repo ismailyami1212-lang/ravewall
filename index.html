@@ -9,7 +9,8 @@
       name="description"
       content="RaveWall helps agencies and freelancers collect, manage and publish customer testimonials across every client — one workspace, saved widgets and team access."
     />
-    <link rel="canonical" href="https://ravewall.vercel.app/" />
+    <!-- Route-aware canonical URLs are applied by src/client/seo.ts. -->
+    <link rel="canonical" href="/" />
     <meta property="og:title" content="RaveWall — testimonials for every client, one workspace" />
     <meta
       property="og:description"
@@ -18,17 +19,86 @@
     <meta property="og:type" content="website" />
     <meta property="og:site_name" content="RaveWall" />
     <meta property="og:url" content="https://ravewall.vercel.app/" />
+    <meta property="og:image" content="https://ravewall.vercel.app/og-image.png" />
+    <meta property="og:image:width" content="1200" />
+    <meta property="og:image:height" content="630" />
+    <meta
+      property="og:image:alt"
+      content="RaveWall — testimonials for every client, one workspace"
+    />
+    <meta property="og:locale" content="en_US" />
     <meta name="twitter:card" content="summary_large_image" />
     <meta name="twitter:title" content="RaveWall — testimonials for every client, one workspace" />
     <meta
       name="twitter:description"
       content="Collect, manage and publish customer testimonials across all your clients from one clean workspace. Free during Early Access, no credit card."
     />
+    <meta name="twitter:image" content="https://ravewall.vercel.app/og-image.png" />
+    <meta
+      name="twitter:image:alt"
+      content="RaveWall — testimonials for every client, one workspace"
+    />
+    <meta name="twitter:site" content="@ravewall" />
     <meta name="apple-mobile-web-app-title" content="RaveWall" />
+    <link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png" />
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <link rel="manifest" href="/site.webmanifest" />
     <!-- Display face for the marketing page; preloaded so the headline does not reflow. -->
     <link rel="preload" href="/fonts/fraunces-latin.woff2" as="font" type="font/woff2" crossorigin />
+    <!-- Site-level structured data: product, brand and site identity. -->
+    <script type="application/ld+json">
+      {
+        "@context": "https://schema.org",
+        "@graph": [
+          {
+            "@type": "Organization",
+            "@id": "https://ravewall.vercel.app/#organization",
+            "name": "RaveWall",
+            "url": "https://ravewall.vercel.app/",
+            "logo": "https://ravewall.vercel.app/ravewall-icon.svg",
+            "brand": { "@type": "Brand", "name": "RaveWall" }
+          },
+          {
+            "@type": "WebSite",
+            "@id": "https://ravewall.vercel.app/#website",
+            "url": "https://ravewall.vercel.app/",
+            "name": "RaveWall",
+            "publisher": { "@id": "https://ravewall.vercel.app/#organization" },
+            "potentialAction": {
+              "@type": "SearchAction",
+              "target": {
+                "@type": "EntryPoint",
+                "urlTemplate": "https://ravewall.vercel.app/wall/{search_term_string}"
+              },
+              "query-input": "required name=search_term_string"
+            }
+          },
+          {
+            "@type": "SoftwareApplication",
+            "@id": "https://ravewall.vercel.app/#software",
+            "name": "RaveWall",
+            "applicationCategory": "BusinessApplication",
+            "operatingSystem": "Web",
+            "url": "https://ravewall.vercel.app/",
+            "description": "RaveWall helps agencies and freelancers collect, moderate and publish customer testimonials across every client from one workspace.",
+            "publisher": { "@id": "https://ravewall.vercel.app/#organization" },
+            "featureList": [
+              "Shareable testimonial collection links",
+              "Moderation inbox with approval and rejection",
+              "Public testimonial walls for every client",
+              "Embeddable widgets in four layouts",
+              "Multi-client workspaces with team access"
+            ],
+            "offers": {
+              "@type": "Offer",
+              "price": "0",
+              "priceCurrency": "USD",
+              "description": "Free during Early Access"
+            }
+          }
+        ]
+      }
+    </script>
   </head>
   <body>
     <div id="root"></div>

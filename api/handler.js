@@ -6,7 +6,8 @@
  * normally, with no rewrite gymnastics.
  *
  * The pool and the Express app are built once per warm instance and reused.
- * Static assets and the SPA shell never reach this function; see vercel.json.
+ * Static assets never reach this function. `/wall/*` is rewritten here so the
+ * initial HTML response can carry server-rendered metadata; see vercel.json.
  *
  * This function does **not** run migrations. Applying them on cold start would
  * make a schema change a side effect of a request, race across instances, and

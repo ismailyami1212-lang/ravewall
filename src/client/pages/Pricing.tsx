@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { MarketingFooter } from '../components/MarketingFooter'
 import { MarketingNav } from '../components/MarketingNav'
+import { applyPricingMetadata } from '../seo'
 import '../marketing.css'
 
 type Billing = 'monthly' | 'yearly'
@@ -157,32 +158,7 @@ function monthlyEquivalent(plan: Plan, billing: Billing): string | null {
 export function Pricing() {
   const [billing, setBilling] = useState<Billing>('monthly')
 
-  useEffect(() => {
-    const previousTitle = document.title
-    document.title = 'RaveWall Pricing — free during Early Access'
-    const meta = document.querySelector('meta[name="description"]')
-    const previousDescription = meta?.getAttribute('content') ?? null
-    meta?.setAttribute(
-      'content',
-      'Simple testimonial software pricing. Free during Early Access, no credit card. Starter $5/month, Pro $9/month, Agency coming soon.',
-    )
-    let canonical = document.querySelector('link[rel="canonical"]')
-    const created = !canonical
-    if (!canonical) {
-      canonical = document.createElement('link')
-      canonical.setAttribute('rel', 'canonical')
-      document.head.appendChild(canonical)
-    }
-    const previousCanonical = canonical.getAttribute('href')
-    canonical.setAttribute('href', 'https://ravewall.vercel.app/pricing')
-
-    return () => {
-      document.title = previousTitle
-      if (previousDescription !== null) meta?.setAttribute('content', previousDescription)
-      if (created) canonical?.remove()
-      else if (previousCanonical) canonical?.setAttribute('href', previousCanonical)
-    }
-  }, [])
+  useEffect(() => applyPricingMetadata(), [])
 
   return (
     <div className="mkt">

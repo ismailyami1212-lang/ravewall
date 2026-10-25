@@ -6,9 +6,11 @@ import express from 'express'
 import helmet from 'helmet'
 import { attachActor } from './auth.js'
 import { AppError, notFound } from './errors.js'
-import { originGuard } from './http.js'
+import { injectNotFoundMetadata, injectWallMetadata } from './html-meta.js'
+import { asyncHandler, originGuard } from './http.js'
+import { findPublicWall } from './public-wall.js'
 import { PostgresRateLimiter, SlidingWindowLimiter, rateLimit } from './rateLimit.js'
-import { listWallSlugs } from './repositories.js'
+import { listIndexableWalls } from './repositories.js'
 import { createAccountRouter } from './routes/account.js'
 import { createAuthRouter } from './routes/auth.js'
 import { createBusinessRouter } from './routes/business.js'
@@ -41,6 +43,33 @@ const UNAVAILABLE_CODES = new Set([
 ])
 
 const POSTGRES_CODE = /^[0-9A-Z]{5}$/
+
+const XML_ESCAPES = {
+  '&': '&amp;',
+  '<': '&lt;',
+  '>': '&gt;',
+  '"': '&quot;',
+  "'": '&apos;',
+}
+
+function escapeXml(value) {
+  return String(value).replace(/[&<>"']/g, (character) => XML_ESCAPES[character])
+}
+
+/** Public absolute origin used in canonical URLs and the sitemap. */
+function publicOrigin(req, config) {
+  if (config.appUrl) return String(config.appUrl).replace(/\/$/, '')
+  // `req.protocol` honours X-Forwarded-Proto when trust proxy is enabled.
+  return `${req.protocol}://${req.get('host')}`.replace(/\/$/, '')
+}
+
+function resolveIndexFile(config) {
+  const candidates = [
+    path.join(config.staticDir, 'index.html'),
+    path.join(process.cwd(), 'dist', 'index.html'),
+  ]
+  return candidates.find((candidate) => fs.existsSync(candidate)) ?? candidates[0]
+}
 
 /**
  * Builds the Express application.
@@ -142,27 +171,44 @@ export function createApp({ db, config, logger = console }) {
 
   app.use('/api', api)
 
+  // ------------------------------------------------------------ HTML shell
+  const indexFile = resolveIndexFile(config)
+  const hasBuild = fs.existsSync(indexFile)
+  let indexTemplate = null
+
+  async function readIndexTemplate() {
+    if (indexTemplate === null) indexTemplate = await fs.promises.readFile(indexFile, 'utf8')
+    return indexTemplate
+  }
+
   // ---------------------------------------------------------------- sitemap
-  // Public, cacheable, and generated from the database so every public wall is
-  // listed. Slugs are CHECK-constrained to `[a-z0-9-]`, so no escaping is
-  // needed. Served through the /api/handler rewrite on Vercel.
+  // Public, cacheable, and generated from the database. Only walls with at
+  // least one approved testimonial are listed; a wall with nothing approved is
+  // thin content and is also tagged `noindex` by the HTML route below.
   app.get('/sitemap.xml', async (req, res) => {
     try {
-      const origin = config.appUrl ?? `https://${req.get('host')}`
-      const base = origin.replace(/\/$/, '')
-      const slugs = await listWallSlugs(db)
+      const base = publicOrigin(req, config)
+      const siteLastmod = new Date().toISOString()
+      const walls = await listIndexableWalls(db)
       const entries = [
-        { loc: `${base}/`, priority: '1.0' },
-        { loc: `${base}/pricing`, priority: '0.8' },
-        { loc: `${base}/privacy`, priority: '0.3' },
-        { loc: `${base}/terms`, priority: '0.3' },
-        ...slugs.map((slug) => ({ loc: `${base}/wall/${slug}`, priority: '0.8' })),
+        { loc: `${base}/`, lastmod: siteLastmod, priority: '1.0' },
+        { loc: `${base}/pricing`, lastmod: siteLastmod, priority: '0.8' },
+        { loc: `${base}/privacy`, lastmod: siteLastmod, priority: '0.3' },
+        { loc: `${base}/terms`, lastmod: siteLastmod, priority: '0.3' },
+        ...walls.map((wall) => ({
+          loc: `${base}/wall/${wall.slug}`,
+          lastmod: wall.lastmod ?? siteLastmod,
+          priority: '0.8',
+        })),
       ]
       const body = [
         '<?xml version="1.0" encoding="UTF-8"?>',
         '<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">',
         ...entries.map(
-          (entry) => `  <url><loc>${entry.loc}</loc><priority>${entry.priority}</priority></url>`,
+          (entry) =>
+            `  <url><loc>${escapeXml(entry.loc)}</loc><lastmod>${escapeXml(
+              entry.lastmod,
+            )}</lastmod><priority>${entry.priority}</priority></url>`,
         ),
         '</urlset>',
       ].join('\n')
@@ -175,10 +221,41 @@ export function createApp({ db, config, logger = console }) {
     }
   })
 
-  // ------------------------------------------------------------ static SPA
-  const indexFile = path.join(config.staticDir, 'index.html')
-  const hasBuild = fs.existsSync(indexFile)
+  // ------------------------------------------------------- wall HTML meta
+  // Vercel rewrites /wall/* here so the first response already carries the
+  // wall's title, description, canonical and social tags. The SPA bundle then
+  // hydrates normally. A missing or malformed slug is a real 404 with
+  // `noindex, follow`, never a soft 200.
+  app.get(
+    '/wall/:slug',
+    asyncHandler(async (req, res, next) => {
+      if (!hasBuild) return next()
 
+      const origin = publicOrigin(req, config)
+      const template = await readIndexTemplate()
+      const wall = await findPublicWall(db, req.params.slug)
+
+      res.set('Cache-Control', 'no-cache')
+
+      if (!wall) {
+        return res
+          .status(404)
+          .type('html')
+          .send(injectNotFoundMetadata(template, { origin, path: req.path }))
+      }
+
+      return res.type('html').send(
+        injectWallMetadata(template, {
+          business: wall.business,
+          stats: wall.stats,
+          origin,
+          slug: wall.slug,
+        }),
+      )
+    }),
+  )
+
+  // ------------------------------------------------------------ static SPA
   if (hasBuild) {
     app.use(
       express.static(config.staticDir, {

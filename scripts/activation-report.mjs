@@ -1,4 +1,3 @@
-#!/usr/bin/env node
 /**
  * RaveWall activation funnel — derived, read-only reporting.
  *

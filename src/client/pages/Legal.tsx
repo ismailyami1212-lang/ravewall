@@ -1,6 +1,8 @@
+import { useEffect } from 'react'
 import { Link } from 'react-router-dom'
 import type { ReactNode } from 'react'
 import { Logo } from '../components/Primitives'
+import { applyPrivacyMetadata, applyTermsMetadata } from '../seo'
 
 /**
  * Shared shell for the legal pages. Deliberately plain and readable — these
@@ -44,6 +46,8 @@ function LegalShell({ title, updated, children }: { title: string; updated: stri
 }
 
 export function Privacy() {
+  useEffect(() => applyPrivacyMetadata(), [])
+
   return (
     <LegalShell title="Privacy policy" updated="17 October 2026">
       <p>
@@ -133,6 +137,8 @@ export function Privacy() {
 }
 
 export function Terms() {
+  useEffect(() => applyTermsMetadata(), [])
+
   return (
     <LegalShell title="Terms of service" updated="17 October 2026">
       <p>

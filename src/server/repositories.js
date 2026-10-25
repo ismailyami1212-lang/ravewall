@@ -319,10 +319,34 @@ export async function getBusinessBySlug(db, slug) {
   return rows[0] ? mapBusiness(rows[0]) : null
 }
 
-/** Every wall slug, for the public sitemap. Slugs are CHECK-constrained safe. */
-export async function listWallSlugs(db) {
-  const { rows } = await db.query('SELECT slug FROM businesses ORDER BY created_at ASC')
-  return rows.map((row) => row.slug)
+/**
+ * Walls that are safe to list in the sitemap: the business's default project
+ * has at least one approved testimonial. A wall with no approved stories is
+ * thin content and is deliberately omitted.
+ *
+ * `lastmod` follows the newest approved row, so a re-crawl sees fresh content
+ * without exposing pending or rejected testimonials.
+ */
+export async function listIndexableWalls(db) {
+  const { rows } = await db.query(
+    `SELECT b.slug,
+            max(t.updated_at) AS lastmod
+       FROM businesses b
+       JOIN LATERAL (
+         SELECT id
+           FROM projects
+          WHERE business_id = b.id
+          ORDER BY is_default DESC, created_at ASC
+          LIMIT 1
+       ) p ON true
+       JOIN testimonials t
+         ON t.project_id = p.id
+        AND t.status = $1
+      GROUP BY b.id, b.slug, b.created_at
+      ORDER BY b.created_at ASC`,
+    [PUBLIC_STATUS],
+  )
+  return rows.map((row) => ({ slug: row.slug, lastmod: toIso(row.lastmod) }))
 }
 
 export async function isSlugTaken(db, slug, exceptId = null) {

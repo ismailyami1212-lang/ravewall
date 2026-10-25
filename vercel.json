@@ -6,6 +6,12 @@
   "rewrites": [
     { "source": "/sitemap.xml", "destination": "/api/handler" },
     { "source": "/api/(.*)", "destination": "/api/handler" },
+    { "source": "/wall/(.*)", "destination": "/api/handler" },
     { "source": "/(.*)", "destination": "/index.html" }
-  ]
+  ],
+  "functions": {
+    "api/handler.js": {
+      "includeFiles": "dist/index.html"
+    }
+  }
 }

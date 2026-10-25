@@ -4,7 +4,7 @@ import { api, type Business, type WallTestimonial } from '../api'
 import { Button, EmptyState, Spinner } from '../components/Primitives'
 import { Stars } from '../components/Stars'
 import { formatDate, initials } from '../format'
-import { applyWallMetadata } from '../seo'
+import { applyWallMetadata, applyWallNotFoundMetadata } from '../seo'
 import { Brand } from './Collect'
 
 /** Public wall reached through /wall/:slug — approved testimonials only. */
@@ -49,11 +49,13 @@ export function Wall() {
 
   // Wall-specific SEO metadata (title, canonical, social tags, JSON-LD) is
   // applied once the approved data loads and restored when the visitor leaves.
+  // A missing wall still manages its noindex directive so client-side
+  // navigation away from the 404 cannot leave `noindex` on another route.
   useEffect(() => {
-    if (!business || loading) return undefined
-    const restore = applyWallMetadata(business, testimonials, stats)
-    return restore
-  }, [business, testimonials, stats, loading])
+    if (loading) return undefined
+    if (!business) return applyWallNotFoundMetadata()
+    return applyWallMetadata(business, testimonials, stats, slug)
+  }, [business, testimonials, stats, loading, slug])
 
   if (loading) {
     return (
