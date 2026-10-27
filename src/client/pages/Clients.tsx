@@ -1,14 +1,16 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
-import { Link, useNavigate } from 'react-router-dom'
+import { Link, useNavigate, useSearchParams } from 'react-router-dom'
 import { AppBar } from '../components/AppBar'
+import { EarlyAccessModal } from '../components/EarlyAccess'
 import { Button, Card, EmptyState, Field, Input, Spinner } from '../components/Primitives'
 import { useToast } from '../components/Toast'
 import { useSession } from '../session'
-import { workspaceApi, type Client, type ClientSummary, type Project } from '../api'
+import { ApiError, workspaceApi, type Client, type ClientSummary, type Project } from '../api'
 
 export function Clients() {
   const { notify } = useToast()
   const navigate = useNavigate()
+  const [searchParams] = useSearchParams()
   const { role } = useSession()
 
   const [clients, setClients] = useState<Client[]>([])
@@ -17,13 +19,15 @@ export function Clients() {
   const [counts, setCounts] = useState<{ clients: number; projects: number }>({ clients: 0, projects: 0 })
   const [loading, setLoading] = useState(true)
   const [search, setSearch] = useState('')
-  const [showForm, setShowForm] = useState(false)
+  const [showForm, setShowForm] = useState(() => searchParams.get('new') === '1')
+  const [earlyAccessOpen, setEarlyAccessOpen] = useState(false)
   const [name, setName] = useState('')
   const [slug, setSlug] = useState('')
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
 
   const canManage = role === 'owner' || role === 'admin'
+  const closeEarlyAccess = useCallback(() => setEarlyAccessOpen(false), [])
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -73,7 +77,15 @@ export function Clients() {
       setShowForm(false)
       await load()
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Could not create the client.')
+      // Billing is dormant, so a plan cap must open the Early Access
+      // explanation instead of dead-ending on a payment error.
+      if (err instanceof ApiError && err.code === 'plan_limit_reached') {
+        setShowForm(false)
+        setError('')
+        setEarlyAccessOpen(true)
+      } else {
+        setError(err instanceof Error ? err.message : 'Could not create the client.')
+      }
     } finally {
       setBusy(false)
     }
@@ -203,6 +215,7 @@ export function Clients() {
           </div>
         )}
       </main>
+      <EarlyAccessModal open={earlyAccessOpen} onClose={closeEarlyAccess} />
     </div>
   )
 }

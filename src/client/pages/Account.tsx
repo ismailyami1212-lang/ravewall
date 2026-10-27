@@ -1,5 +1,7 @@
 import { useCallback, useEffect, useState } from 'react'
+import { Link } from 'react-router-dom'
 import { AppBar } from '../components/AppBar'
+import { EarlyAccessTrigger } from '../components/EarlyAccess'
 import { Button, Card, Field, Input, Spinner } from '../components/Primitives'
 import { useToast } from '../components/Toast'
 import { useSession } from '../session'
@@ -9,7 +11,10 @@ type Session = { id: string; createdAt: string; lastSeenAt: string; expiresAt: s
 
 export function Account() {
   const { notify } = useToast()
-  const { refresh } = useSession()
+  const { refresh, workspace } = useSession()
+  const planLabel = workspace?.plan
+    ? workspace.plan.charAt(0).toUpperCase() + workspace.plan.slice(1)
+    : 'Free'
 
   const [name, setName] = useState('')
   const [email, setEmail] = useState('')
@@ -122,8 +127,29 @@ export function Account() {
       <main className="container narrow">
         <div className="page-head">
           <h1>Account</h1>
-          <p>Manage your profile, password and active sessions.</p>
+          <p>Manage your profile, password, plan and active sessions.</p>
         </div>
+
+        <Card className="card-pad billing-card" style={{ marginBottom: 24 }}>
+          <div className="section-title-row">
+            <div>
+              <p className="link-label">Plan &amp; billing</p>
+              <h3 className="section-title">Current plan · {planLabel}</h3>
+            </div>
+            <span className="badge badge-approved">Early Access</span>
+          </div>
+          <p className="muted">
+            RaveWall is currently 100% Free during Early Access. Every workspace feature is
+            unlocked, and no credit card is required. Paid plans are not on sale yet, so upgrading
+            opens an overview instead of a checkout.
+          </p>
+          <div className="row-actions billing-actions">
+            <EarlyAccessTrigger label="Upgrade plan" variant="outline" />
+            <Link to="/pricing" className="btn btn-ghost btn-md">
+              Compare plans
+            </Link>
+          </div>
+        </Card>
 
         <Card className="card-pad" style={{ marginBottom: 24 }}>
           <h3 className="section-title">Profile</h3>

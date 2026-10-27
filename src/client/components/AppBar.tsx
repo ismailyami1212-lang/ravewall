@@ -1,5 +1,6 @@
 import { Link, useNavigate } from 'react-router-dom'
 import { useSession } from '../session'
+import { EarlyAccessBanner } from './EarlyAccess'
 import { Button, Logo } from './Primitives'
 import { WorkspaceSwitcher } from './WorkspaceSwitcher'
 
@@ -40,6 +41,7 @@ export function AppBar() {
           </Button>
         </div>
       </div>
+      <EarlyAccessBanner />
     </header>
   )
 }

@@ -24,8 +24,6 @@ import { useSession } from '../session'
 type Filter = 'pending' | 'approved' | 'rejected' | 'all'
 type Overview = Awaited<ReturnType<typeof contentApi.workspaceAnalytics>>
 
-const ONBOARDING_KEY = 'ravewall.onboarding.dismissed'
-
 const EMPTY_STATS: Stats = {
   total: 0,
   pending: 0,
@@ -43,7 +41,7 @@ const TABS: { key: Filter; label: string }[] = [
 ]
 
 export function Dashboard() {
-  const { business } = useSession()
+  const { business, role } = useSession()
   const { notify } = useToast()
   const [searchParams, setSearchParams] = useSearchParams()
 
@@ -203,6 +201,20 @@ export function Dashboard() {
 
   const scope = clientId || effectiveProjectId
   const shareSlug = activeClient?.slug ?? business?.slug ?? ''
+  const canManageClients = role === 'owner' || role === 'admin'
+  // The overview is the authority on whether this workspace has ever received
+  // a testimonial. While it is still loading we keep the normal console visible
+  // rather than flashing a first-run state at existing accounts.
+  const isFirstRun = overview !== null && overview.testimonials === 0
+
+  async function copyCollectLink() {
+    if (!shareSlug) return
+    const ok = await copyText(collectUrl(shareSlug))
+    notify(
+      ok ? 'Collection link copied — share it with your client.' : 'Could not access the clipboard.',
+      ok ? 'success' : 'error',
+    )
+  }
 
   return (
     <div className="app-shell">
@@ -229,8 +241,19 @@ export function Dashboard() {
           </div>
         </div>
 
-        {overview ? <OnboardingChecklist overview={overview} /> : null}
+        {overview ? <OnboardingChecklist overview={overview} clients={clients} /> : null}
 
+        {isFirstRun ? (
+          <DashboardEmptyState
+            hasClients={clients.length > 0}
+            canManageClients={canManageClients}
+            shareSlug={shareSlug}
+            onCopyLink={() => void copyCollectLink()}
+          />
+        ) : null}
+
+        {!isFirstRun ? (
+          <>
         {overview && clients.length > 1 ? (
           <section className="card card-pad stack agency-overview">
             <div className="section-title-row">
@@ -432,6 +455,8 @@ export function Dashboard() {
             </ul>
           )}
         </section>
+          </>
+        ) : null}
       </main>
     </div>
   )
@@ -509,61 +534,192 @@ function TestimonialRow({
 }
 
 /**
- * Progressive, dismissible activation checklist. Every step is derived from
- * real workspace data, so it can never claim progress the account has not made.
+ * Persistent three-step activation checklist for new workspaces. Every step is
+ * derived from real workspace/client data, so it can never claim progress the
+ * account has not made. It disappears on its own once all three are complete.
  */
-function OnboardingChecklist({ overview }: { overview: Overview }) {
-  const [dismissed, setDismissed] = useState(() => {
-    try {
-      return localStorage.getItem(ONBOARDING_KEY) === '1'
-    } catch {
-      return false
-    }
-  })
-  if (dismissed) return null
+export function OnboardingChecklist({ overview, clients }: { overview: Overview; clients: Client[] }) {
+  const brandingConfigured = clients.some(
+    (client) =>
+      client.tagline.trim() !== '' ||
+      client.logoUrl.trim() !== '' ||
+      client.accentColor.toLowerCase() !== '#15803d',
+  )
+  const firstClientId = clients[0]?.id
+  const configureHref = firstClientId ? `/clients/${firstClientId}` : '/clients?new=1'
 
   const steps = [
-    { label: 'Add a client', done: overview.clients >= 1, to: '/clients' },
-    { label: 'Collect a testimonial', done: overview.testimonials >= 1, to: '/clients' },
-    { label: 'Approve a testimonial', done: overview.approved >= 1, to: '/dashboard' },
-    { label: 'Create a widget', done: overview.widgets.total >= 1, to: '/widgets' },
-    { label: 'Publish a widget', done: overview.widgets.live >= 1, to: '/widgets?status=draft' },
+    {
+      label: 'Add your first client workspace',
+      done: overview.clients >= 1,
+      to: '/clients?new=1',
+    },
+    {
+      label: 'Configure collection questions / branding',
+      done: brandingConfigured,
+      to: configureHref,
+    },
+    {
+      label: 'Generate & share your collection link',
+      done: overview.testimonials >= 1,
+      to: configureHref,
+    },
   ]
   const doneCount = steps.filter((step) => step.done).length
   if (doneCount === steps.length) return null
 
-  function dismiss() {
-    try {
-      localStorage.setItem(ONBOARDING_KEY, '1')
-    } catch {
-      /* private mode — the dismissal lasts for this session */
-    }
-    setDismissed(true)
-  }
-
   return (
-    <section className="card card-pad onboarding">
-      <div className="section-title-row">
-        <h2 className="section-title">Get started</h2>
-        <div className="row-actions">
-          <span className="muted">
-            {doneCount} of {steps.length}
-          </span>
-          <Button variant="ghost" size="sm" onClick={dismiss}>
-            Dismiss
-          </Button>
+    <section className="card card-pad onboarding" aria-labelledby="onboarding-title">
+      <div className="section-title-row onboarding-head">
+        <div>
+          <h2 id="onboarding-title" className="section-title">
+            Get started
+          </h2>
+          <p className="muted">Three quick steps to your first published testimonial.</p>
         </div>
+        <span className="onboarding-count">
+          {doneCount} of {steps.length} complete
+        </span>
       </div>
-      <ul className="onboarding-steps">
-        {steps.map((step) => (
+
+      <div
+        className="onboarding-progress"
+        role="progressbar"
+        aria-label="Onboarding progress"
+        aria-valuemin={0}
+        aria-valuemax={steps.length}
+        aria-valuenow={doneCount}
+      >
+        <span style={{ width: `${(doneCount / steps.length) * 100}%` }} />
+      </div>
+
+      <ol className="onboarding-steps">
+        {steps.map((step, index) => (
           <li key={step.label} className={`onboarding-step ${step.done ? 'onboarding-step-done' : ''}`.trim()}>
             <span className="onboarding-check" aria-hidden="true">
-              {step.done ? '✓' : '○'}
+              {step.done ? '✓' : index + 1}
             </span>
-            {step.done ? <span>{step.label}</span> : <Link to={step.to}>{step.label}</Link>}
+            {step.done ? (
+              <span>{step.label}</span>
+            ) : (
+              <Link to={step.to}>
+                {step.label}
+                <span className="onboarding-arrow" aria-hidden="true">
+                  →
+                </span>
+              </Link>
+            )}
           </li>
         ))}
-      </ul>
+      </ol>
+    </section>
+  )
+}
+
+/**
+ * First-run dashboard state. Shows the payoff before the user has any data:
+ * one client, one shared link, testimonials arriving in the inbox.
+ */
+export function DashboardEmptyState({
+  hasClients,
+  canManageClients,
+  shareSlug,
+  onCopyLink,
+}: {
+  hasClients: boolean
+  canManageClients: boolean
+  shareSlug: string
+  onCopyLink: () => void
+}) {
+  return (
+    <section className="card dashboard-empty" aria-labelledby="dashboard-empty-title">
+      <div className="dashboard-empty-copy">
+        <p className="dashboard-empty-eyebrow">Your first testimonial is one link away</p>
+        <h2 id="dashboard-empty-title">
+          {hasClients
+            ? 'Turn a happy client into your next five-star review.'
+            : 'Start with one client. Publish proof that sells for you.'}
+        </h2>
+        <p className="dashboard-empty-lede">
+          Add a client workspace, make the collection form yours, then share one link. Approved
+          testimonials appear on their wall and in your widgets automatically.
+        </p>
+
+        <ul className="dashboard-empty-points">
+          <li>One branded collection link per client</li>
+          <li>Moderate every testimonial before it goes live</li>
+          <li>Embed the wall anywhere with one snippet</li>
+        </ul>
+
+        <div className="dashboard-empty-actions">
+          {canManageClients ? (
+            <Link to="/clients?new=1" className="btn btn-primary btn-md">
+              + Add Your First Client
+            </Link>
+          ) : (
+            <Link to="/clients" className="btn btn-primary btn-md">
+              Open clients
+            </Link>
+          )}
+          {shareSlug ? (
+            <>
+              <Button variant="outline" onClick={onCopyLink}>
+                Copy collection link
+              </Button>
+              <a
+                className="btn btn-ghost btn-md"
+                href={collectUrl(shareSlug)}
+                target="_blank"
+                rel="noreferrer"
+              >
+                Preview form
+              </a>
+            </>
+          ) : null}
+        </div>
+        <p className="dashboard-empty-note">
+          Free during Early Access. No credit card, no trial clock.
+        </p>
+      </div>
+
+      <aside className="sample-preview" aria-label="Example of a finished testimonial wall">
+        <div className="sample-preview-toolbar" aria-hidden="true">
+          <span />
+          <span />
+          <span />
+          <em>ravewall.com/wall/acme</em>
+        </div>
+        <div className="sample-preview-body">
+          <div className="sample-preview-brand">
+            <span className="sample-preview-logo" aria-hidden="true">
+              A
+            </span>
+            <div>
+              <strong>Acme Design Studio</strong>
+              <span className="sample-preview-summary">Acme Design Studio — 3 Testimonials collected</span>
+            </div>
+            <span className="sample-preview-badge">Sample</span>
+          </div>
+          <div className="sample-preview-rating">
+            <Stars value={5} size="sm" />
+            <span>5.0 average</span>
+          </div>
+          <blockquote className="sample-preview-quote">
+            “They turned our launch into the easiest part of the project. The new site is already
+            bringing in better leads.”
+            <footer>
+              <span className="avatar avatar-sm" aria-hidden="true">
+                ME
+              </span>
+              <span>
+                <strong>Mara Ellis</strong>
+                <span className="muted">Founder, Northwind</span>
+              </span>
+            </footer>
+          </blockquote>
+          <div className="sample-preview-shine" aria-hidden="true" />
+        </div>
+      </aside>
     </section>
   )
 }
