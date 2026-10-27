@@ -15,7 +15,7 @@ import { renderResetEmail, sendEmail } from '../email.js'
 import { badRequest, unauthorized } from '../errors.js'
 import { asyncHandler, parse, send } from '../http.js'
 import { rateLimit } from '../rateLimit.js'
-import { createWorkspace } from '../workspaces.js'
+import { createWorkspace, listClients, listMemberClientIds, listMemberships } from '../workspaces.js'
 import {
   consumePasswordReset,
   createPasswordReset,
@@ -24,7 +24,6 @@ import {
   deleteSessionsForUser,
   findUserByEmail,
   findValidPasswordReset,
-  getBusinessByOwner,
   publicBusiness,
   publicUser,
   updateUserPassword,
@@ -105,7 +104,17 @@ export function createAuthRouter({ db, config, limiters }) {
       // captured before login can never be promoted to an authenticated session.
       const { token } = await issueSession(db, user.id, config)
       setSessionCookie(res, token, config)
-      const business = await getBusinessByOwner(db, user.id)
+
+      // Resolve the default client through an active workspace membership only.
+      // There is deliberately no legacy owner_user_id fallback: a removed member
+      // must not receive tenant data just because they created the row.
+      const primary = (await listMemberships(db, user.id))[0] ?? null
+      let business = null
+      if (primary) {
+        const allowedClientIds = await listMemberClientIds(db, primary)
+        const clients = await listClients(db, primary.workspaceId, allowedClientIds)
+        business = clients[0] ?? null
+      }
       send(res, { user: publicUser(user), business: publicBusiness(business) })
     }),
   )
@@ -160,8 +169,13 @@ export function createAuthRouter({ db, config, limiters }) {
           expiresAt,
         })
 
-        const origin = config.appUrl ?? `https://${req.get('host')}`
-        const resetUrl = `${origin.replace(/\/$/, '')}/reset-password?token=${encodeURIComponent(token)}`
+        if (!config.appUrl) {
+          // Never derive a reset link from the request Host header: an attacker
+          // could make the victim receive a token for the attacker's domain.
+          throw new Error('APP_URL is required to build password reset links.')
+        }
+        const origin = String(config.appUrl).replace(/\/$/, '')
+        const resetUrl = `${origin}/reset-password?token=${encodeURIComponent(token)}`
         const { html, text } = renderResetEmail(resetUrl, ttlMinutes)
         await sendEmail(
           { to: user.email, subject: 'Reset your RaveWall password', html, text },

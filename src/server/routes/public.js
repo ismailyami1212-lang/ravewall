@@ -1,6 +1,7 @@
 import { Router } from 'express'
 import { testimonialSubmissionSchema, slugSchema } from '../../shared/validation.js'
 import { fingerprint } from '../auth.js'
+import { renderNewTestimonialEmail, sendEmail } from '../email.js'
 import { badRequest, notFound, tooManyRequests } from '../errors.js'
 import { asyncHandler, parse, send } from '../http.js'
 import { rateLimit } from '../rateLimit.js'
@@ -13,7 +14,12 @@ import {
   publicBusiness,
   wallTestimonial,
 } from '../repositories.js'
-import { getClientById, getDefaultProject, getProjectBySlug } from '../workspaces.js'
+import {
+  getClientById,
+  getDefaultProject,
+  getProjectBySlug,
+  listNotificationRecipients,
+} from '../workspaces.js'
 import { getPublicWidget } from '../widgets.js'
 
 /** Upper bound on testimonials returned for an embedded widget. */
@@ -40,8 +46,60 @@ function wallStats(testimonials) {
  *
  * @param {{ db: any, config: any, limiters: any }} deps
  */
-export function createPublicRouter({ db, config, limiters }) {
+export function createPublicRouter({ db, config, limiters, logger = console }) {
   const router = Router()
+
+  /** Absolute in-app link. Never derived from the request Host header. */
+  function appLink(path) {
+    if (!config.appUrl) return null
+    return `${String(config.appUrl).replace(/\/$/, '')}${path}`
+  }
+
+  /**
+   * Alerts the workspace team after a testimonial is stored. Delivery failures
+   * are deliberately swallowed: a visitor's submission must succeed even when
+   * Resend is unavailable or no API key is configured.
+   */
+  async function notifyNewSubmission({ business, project, testimonial, answers, questions }) {
+    try {
+      const recipients = await listNotificationRecipients(db, project.workspaceId, business.id)
+      if (recipients.length === 0) return
+
+      const dashboardUrl = appLink(
+        `/dashboard?clientId=${encodeURIComponent(business.id)}&projectId=${encodeURIComponent(project.id)}`,
+      )
+      const answerList = questions
+        .filter((question) => answers[question.id])
+        .map((question) => ({ label: question.label, value: answers[question.id] }))
+
+      await Promise.allSettled(
+        recipients.map(async (recipient) => {
+          const message = renderNewTestimonialEmail({
+            recipientName: recipient.name,
+            workspaceName: recipient.workspaceName ?? '',
+            clientName: business.name,
+            projectName: project.name,
+            testimonial,
+            answers: answerList,
+            dashboardUrl,
+          })
+          await sendEmail(
+            { to: recipient.email, subject: message.subject, html: message.html, text: message.text },
+            {
+              resendApiKey: config.resendApiKey ?? null,
+              emailFrom: config.emailFrom ?? 'RaveWall <onboarding@resend.dev>',
+              emailTestRecipient: config.emailTestRecipient ?? null,
+              logger,
+            },
+          )
+        }),
+      )
+    } catch (error) {
+      logger.error?.('[kudos] new testimonial notification failed', {
+        message: error instanceof Error ? error.message : String(error),
+      })
+    }
+  }
 
   async function resolveTarget(req) {
     const slug = parse(slugSchema, req.params.slug)
@@ -214,6 +272,8 @@ export function createPublicRouter({ db, config, limiters }) {
           answers,
         },
       )
+
+      await notifyNewSubmission({ business, project, testimonial, answers, questions })
 
       send(res, { accepted: true, status: testimonial.status }, 201)
     }),

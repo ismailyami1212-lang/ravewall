@@ -6,8 +6,9 @@
  * enforces the rules before returning anything. SQL is always scoped by
  * workspace as well, so a forgotten check cannot leak another tenant's rows.
  */
-import { conflict, notFound } from './errors.js'
+import { conflict, notFound, paymentRequired } from './errors.js'
 import { canManageClients, canManageTeam, canModerate, clientInScope, isUnscoped } from './access.js'
+import { planName } from '../shared/plans.js'
 
 const UNIQUE_VIOLATION = '23505'
 
@@ -22,6 +23,14 @@ const mapWorkspace = (row) => ({
   name: row.name,
   plan: row.plan,
   createdAt: toIso(row.created_at),
+})
+
+const mapBilling = (row) => ({
+  id: row.id,
+  plan: row.plan,
+  stripeCustomerId: row.stripe_customer_id ?? null,
+  stripeSubscriptionId: row.stripe_subscription_id ?? null,
+  subscriptionStatus: row.subscription_status ?? null,
 })
 
 const mapMember = (row) => ({
@@ -131,6 +140,43 @@ export async function listTeam(db, workspaceId) {
   return members.map((member) => ({ ...member, clientIds: byMember.get(member.id) ?? [] }))
 }
 
+/**
+ * Active owners, admins and managers who should hear about a new testimonial.
+ * Viewers are intentionally excluded: they can read the inbox but do not act
+ * on submissions. A manager only receives alerts for clients assigned to them,
+ * matching the scope enforced by `listMemberClientIds`.
+ */
+export async function listNotificationRecipients(db, workspaceId, clientId) {
+  const { rows } = await db.query(
+    `SELECT DISTINCT u.id, u.name, u.email, w.name AS workspace_name
+       FROM workspace_members m
+       JOIN users u ON u.id = m.user_id
+       JOIN workspaces w ON w.id = m.workspace_id
+      WHERE m.workspace_id = $1
+        AND m.status = 'active'
+        AND (
+          m.role IN ('owner', 'admin')
+          OR (
+            m.role = 'manager'
+            AND EXISTS (
+              SELECT 1
+                FROM workspace_member_clients c
+               WHERE c.member_id = m.id
+                 AND c.business_id = $2
+            )
+          )
+        )
+      ORDER BY u.email`,
+    [workspaceId, clientId],
+  )
+  return rows.map((row) => ({
+    id: row.id,
+    name: row.name,
+    email: row.email,
+    workspaceName: row.workspace_name,
+  }))
+}
+
 export async function addMember(db, workspaceId, userId, role = 'manager') {
   try {
     const { rows } = await db.query(
@@ -230,6 +276,79 @@ export async function deleteWorkspace(db, workspaceId) {
 }
 
 /* -------------------------------------------------------------------------- */
+/* Billing                                                                    */
+/* -------------------------------------------------------------------------- */
+
+/** Billing identifiers for one workspace. Internal; never returned publicly. */
+export async function getWorkspaceBilling(db, workspaceId) {
+  const { rows } = await db.query(
+    `SELECT id, plan, stripe_customer_id, stripe_subscription_id, subscription_status
+       FROM workspaces
+      WHERE id = $1`,
+    [workspaceId],
+  )
+  return rows[0] ? mapBilling(rows[0]) : null
+}
+
+/**
+ * Persists a new Stripe customer id without overwriting an existing one.
+ *
+ * The conditional COALESCE makes two concurrent checkout requests converge on
+ * the first customer rather than replacing it. The unique index on the column
+ * is the final guard against accidentally sharing a customer across tenants.
+ *
+ * @returns {Promise<string | null>} the customer id now stored
+ */
+export async function setStripeCustomerId(db, workspaceId, customerId) {
+  const { rows } = await db.query(
+    `UPDATE workspaces
+        SET stripe_customer_id = COALESCE(stripe_customer_id, $2)
+      WHERE id = $1
+      RETURNING stripe_customer_id`,
+    [workspaceId, customerId],
+  )
+  return rows[0]?.stripe_customer_id ?? null
+}
+
+/**
+ * Applies verified webhook state to a workspace.
+ *
+ * Callers are responsible for deciding the plan; this function only persists
+ * it. Billing ids use COALESCE so an event that omits one cannot erase the
+ * other, and an event that arrives out of order cannot blank an id.
+ */
+export async function syncStripeSubscription(
+  db,
+  { workspaceId, plan, customerId, subscriptionId, status },
+) {
+  const { rows } = await db.query(
+    `UPDATE workspaces
+        SET plan = $2,
+            stripe_customer_id = COALESCE($3, stripe_customer_id),
+            stripe_subscription_id = COALESCE($4, stripe_subscription_id),
+            subscription_status = COALESCE($5, subscription_status)
+      WHERE id = $1
+      RETURNING id, plan, stripe_customer_id, stripe_subscription_id, subscription_status`,
+    [workspaceId, plan, customerId ?? null, subscriptionId ?? null, status ?? null],
+  )
+  return rows[0] ? mapBilling(rows[0]) : null
+}
+
+/** Resolves an event to a workspace by either Stripe reference. */
+export async function findWorkspaceByStripeIds(db, { customerId, subscriptionId }) {
+  if (!customerId && !subscriptionId) return null
+  const { rows } = await db.query(
+    `SELECT id
+       FROM workspaces
+      WHERE ($1::text IS NOT NULL AND stripe_customer_id = $1)
+         OR ($2::text IS NOT NULL AND stripe_subscription_id = $2)
+      LIMIT 1`,
+    [customerId ?? null, subscriptionId ?? null],
+  )
+  return rows[0]?.id ?? null
+}
+
+/* -------------------------------------------------------------------------- */
 /* Clients (businesses)                                                       */
 /* -------------------------------------------------------------------------- */
 
@@ -253,8 +372,39 @@ export async function getClientById(db, id) {
   return rows[0] ? mapClient(rows[0]) : null
 }
 
-export async function createClient(db, { workspaceId, ownerUserId, name, slug, tagline, logoUrl, accentColor }) {
+export async function createClient(
+  db,
+  {
+    workspaceId,
+    ownerUserId,
+    name,
+    slug,
+    tagline,
+    logoUrl,
+    accentColor,
+    maxClients = null,
+    plan = 'free',
+  },
+) {
   return db.transaction(async (client) => {
+    if (maxClients !== null) {
+      // Lock the workspace row so two simultaneous creates cannot both observe
+      // "one client left" and push the workspace over its plan limit.
+      await client.query('SELECT id FROM workspaces WHERE id = $1 FOR UPDATE', [workspaceId])
+      const { rows: counts } = await client.query(
+        'SELECT count(*)::int AS n FROM businesses WHERE workspace_id = $1',
+        [workspaceId],
+      )
+      if (counts[0].n >= maxClients) {
+        const label = planName(plan)
+        const noun = maxClients === 1 ? 'client' : 'clients'
+        throw paymentRequired(
+          `The ${label} plan includes ${maxClients} ${noun}. Upgrade to add another client.`,
+          { clients: `You have reached the ${label} plan limit.` },
+        )
+      }
+    }
+
     let business
     try {
       const { rows } = await client.query(

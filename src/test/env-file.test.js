@@ -161,6 +161,7 @@ describe('migration connection', () => {
     NODE_ENV: 'production',
     SUPABASE_DB_URL: 'postgresql://u:p@aws-0-eu.pooler.supabase.com:6543/postgres',
     SESSION_SECRET: 's'.repeat(48),
+    APP_URL: 'https://ravewall.example.com',
   }
 
   it('falls back to the runtime URL when no migration URL is set', () => {

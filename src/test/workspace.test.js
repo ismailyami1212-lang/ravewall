@@ -34,6 +34,11 @@ function withWs(agent, wsId) {
   return agent.set('x-workspace-id', wsId)
 }
 
+/** Test setup: move a workspace onto a paid plan so multiple clients are allowed. */
+async function upgrade(wsId, plan = 'starter') {
+  await server.sql('UPDATE workspaces SET plan = $2 WHERE id = $1', [wsId, plan])
+}
+
 describe('workspace bootstrap', () => {
   it('gives every new account a workspace and owner role', async () => {
     const alice = await signup(server.app, 'alice@example.com', 'Alice')
@@ -88,11 +93,45 @@ describe('client lifecycle', () => {
     const alice = await signup(server.app, 'alice@example.com', 'Alice')
     const ws = await workspaceId(alice)
     await withWs(alice, ws).post('/api/workspace/clients').send({ name: 'Acme Co' }).expect(201)
+    await upgrade(ws)
     const dup = await withWs(alice, ws)
       .post('/api/workspace/clients')
       .send({ name: 'acme-co', slug: 'acme-co' })
       .expect(409)
     expect(dup.body.error.fields.slug).toBeDefined()
+  })
+
+  it('persists branding from the client detail editor, including the accent alias', async () => {
+    const alice = await signup(server.app, 'alice@example.com', 'Alice')
+    const ws = await workspaceId(alice)
+    const created = await withWs(alice, ws)
+      .post('/api/workspace/clients')
+      .send({ name: 'Acme Co' })
+      .expect(201)
+    const clientId = created.body.data.client.id
+
+    const patched = await withWs(alice, ws)
+      .patch(`/api/workspace/clients/${clientId}`)
+      .send({
+        tagline: 'Brand systems that ship',
+        logoUrl: 'https://cdn.example.com/acme.png',
+        accent: '#7c3aed',
+      })
+      .expect(200)
+    expect(patched.body.data.client).toMatchObject({
+      tagline: 'Brand systems that ship',
+      logoUrl: 'https://cdn.example.com/acme.png',
+      accentColor: '#7c3aed',
+    })
+
+    const persisted = await withWs(alice, ws)
+      .get(`/api/workspace/clients/${clientId}`)
+      .expect(200)
+    expect(persisted.body.data.client).toMatchObject({
+      tagline: 'Brand systems that ship',
+      logoUrl: 'https://cdn.example.com/acme.png',
+      accentColor: '#7c3aed',
+    })
   })
 
   it('renames a client but keeps the workspace', async () => {
@@ -113,6 +152,7 @@ describe('client lifecycle', () => {
   it('refuses to delete the last remaining client', async () => {
     const alice = await signup(server.app, 'alice@example.com', 'Alice')
     const ws = await workspaceId(alice)
+    await upgrade(ws)
     const created = await withWs(alice, ws)
       .post('/api/workspace/clients')
       .send({ name: 'Acme Co' })
@@ -182,6 +222,7 @@ describe('tenant isolation', () => {
   it('scopes a manager to only their assigned clients', async () => {
     const alice = await signup(server.app, 'alice@example.com', 'Alice')
     const ws = await workspaceId(alice)
+    await upgrade(ws)
     const acme = await withWs(alice, ws).post('/api/workspace/clients').send({ name: 'Acme Co' }).expect(201)
     const globex = await withWs(alice, ws).post('/api/workspace/clients').send({ name: 'Globex' }).expect(201)
 
@@ -294,11 +335,53 @@ describe('agency roles & permissions', () => {
 
     // An admin can manage the team, but may not change their own role — this
     // blocks both self-demotion and accidental self-escalation paths.
-    const res = await withWs(bob, ws)
+    const demote = await withWs(bob, ws)
       .patch(`/api/workspace/team/${bobMember.userId}`)
       .send({ role: 'viewer' })
       .expect(409)
-    expect(res.body.error.code).toBe('conflict')
+    expect(demote.body.error.code).toBe('conflict')
+
+    const escalate = await withWs(bob, ws)
+      .patch(`/api/workspace/team/${bobMember.userId}`)
+      .send({ role: 'owner' })
+      .expect(409)
+    expect(escalate.body.error.code).toBe('conflict')
+
+    const team = await withWs(alice, ws).get('/api/workspace/team').expect(200)
+    expect(team.body.data.items.find((m) => m.email === 'bob@example.com').role).toBe('admin')
+  })
+
+  it('never falls back to legacy owner_user_id access after membership is removed', async () => {
+    const alice = await signup(server.app, 'alice@example.com', 'Alice')
+    const ws = await workspaceId(alice)
+    const bob = await signup(server.app, 'bob@example.com', 'Bob')
+    const bobWs = await workspaceId(bob)
+    const bobUid = await userId(bob)
+
+    await withWs(alice, ws).post('/api/workspace/team').send({ email: 'bob@example.com', role: 'manager' }).expect(201)
+
+    // Simulate a legacy row: Bob created this client, but membership is what
+    // grants access. Remove his membership and his own workspace so he has no
+    // active membership anywhere.
+    await server.sql(
+      `INSERT INTO businesses (workspace_id, owner_user_id, name, slug)
+       VALUES ($1, $2, 'Legacy Client', 'legacy-client')`,
+      [ws, bobUid],
+    )
+    await withWs(alice, ws).delete(`/api/workspace/team/${bobUid}`).expect(204)
+    await server.sql('DELETE FROM workspace_members WHERE user_id = $1', [bobUid])
+    await server.sql('DELETE FROM workspaces WHERE id = $1', [bobWs])
+
+    const bobAgent = request.agent(server.app)
+    const login = await bobAgent
+      .post('/api/auth/login')
+      .send({ email: 'bob@example.com', password: VALID_PASSWORD })
+      .expect(200)
+    expect(login.body.data.business).toBeNull()
+
+    const business = await bobAgent.get('/api/business').expect(200)
+    expect(business.body.data.business).toBeNull()
+    await bobAgent.get('/api/workspace/').expect(404)
   })
 
   it('keeps at least one owner when demoting', async () => {

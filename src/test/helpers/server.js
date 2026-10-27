@@ -14,6 +14,7 @@ export const TEST_ENV = {
   NODE_ENV: 'test',
   SUPABASE_DB_URL: 'postgresql://kudos:kudos@127.0.0.1:5432/kudos_test',
   SESSION_SECRET: 'test-session-secret-that-is-long-enough-to-pass',
+  APP_URL: 'https://ravewall.test',
 }
 
 /**
@@ -52,8 +53,9 @@ const TRUNCATE_ALL =
  * Boots the real Express app against a migrated Postgres with empty tables.
  *
  * @param {Record<string, unknown>} [overrides] config overrides for this app
+ * @param {{ stripe?: any }} [options] dependency overrides (used by billing tests)
  */
-export async function createTestServer(overrides = {}) {
+export async function createTestServer(overrides = {}, options = {}) {
   const db = await sharedDb()
   // Rate limit counters are wiped along with the data, so a test that installs a
   // small ceiling starts from zero — exactly like a freshly booted instance.
@@ -66,7 +68,7 @@ export async function createTestServer(overrides = {}) {
     ...overrides,
   }
 
-  const app = createApp({ db, config, logger: silentLogger })
+  const app = createApp({ db, config, logger: silentLogger, stripe: options.stripe ?? null })
 
   return {
     app,

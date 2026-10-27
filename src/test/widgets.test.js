@@ -18,7 +18,13 @@ function signup(app, email, name = 'Owner') {
     .post('/api/auth/signup')
     .send({ email, password: VALID_PASSWORD, name })
     .expect(201)
-    .then(() => agent)
+    .then(async () => {
+      // Several tests create two clients. Give every test workspace Starter so
+      // the Free client cap does not interfere with widget behaviour.
+      const ws = (await agent.get('/api/account').expect(200)).body.data.workspace.id
+      await server.sql("UPDATE workspaces SET plan = 'starter' WHERE id = $1", [ws])
+      return agent
+    })
 }
 
 async function account(agent) {

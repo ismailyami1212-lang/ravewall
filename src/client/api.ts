@@ -98,6 +98,9 @@ export type Question = {
   required: boolean
   position: number
 }
+
+/** Public collection payload: only the fields a respondent needs. */
+export type PublicQuestion = Pick<Question, 'id' | 'label' | 'type' | 'required'>
 export type WidgetStatus = 'draft' | 'live' | 'archived'
 export type WidgetConfig = {
   id: string
@@ -320,7 +323,9 @@ export const api = {
     }),
 
   publicBusiness: (slug: string) =>
-    request<{ business: Business }>(`/public/business/${encodeURIComponent(slug)}`),
+    request<{ business: Business; questions: PublicQuestion[] }>(
+      `/public/business/${encodeURIComponent(slug)}`,
+    ),
 
   wall: (slug: string) =>
     request<{ business: Business; testimonials: WallTestimonial[]; stats: { count: number; averageRating: number } }>(
@@ -329,7 +334,14 @@ export const api = {
 
   submitTestimonial: (
     slug: string,
-    body: { rating: number; name: string; company?: string; text: string; website?: string },
+    body: {
+      rating: number
+      name: string
+      company?: string
+      text: string
+      website?: string
+      answers?: Record<string, string>
+    },
   ) =>
     request<{ accepted: boolean; status: TestimonialStatus }>(
       `/public/submit/${encodeURIComponent(slug)}`,
@@ -348,9 +360,9 @@ export const workspaceApi = {
 
   listClients: () => request<{ items: Client[] }>('/workspace/clients'),
   clientsSummary: () => request<{ items: ClientSummary[] }>('/workspace/clients/summary'),
-  createClient: (body: { name: string; slug?: string }) =>
+  createClient: (body: { name: string; slug?: string; tagline?: string; logoUrl?: string; accentColor?: string; accent?: string }) =>
     request<{ client: Client }>('/workspace/clients', post(body)),
-  updateClient: (id: string, body: { name?: string; slug?: string; tagline?: string; logoUrl?: string; accentColor?: string }) =>
+  updateClient: (id: string, body: { name?: string; slug?: string; tagline?: string; logoUrl?: string; accentColor?: string; accent?: string }) =>
     request<{ client: Client }>(`/workspace/clients/${encodeURIComponent(id)}`, patch(body)),
   deleteClient: (id: string) =>
     request<void>(`/workspace/clients/${encodeURIComponent(id)}`, { method: 'DELETE' }),

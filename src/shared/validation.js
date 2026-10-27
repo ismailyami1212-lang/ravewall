@@ -107,6 +107,25 @@ export const loginSchema = z.object({
   password: z.string().min(1, 'Password is required').max(72, 'Password is too long'),
 })
 
+/**
+ * Branding fields shared by client creation/updates. `accent` is accepted as a
+ * compatibility alias for `accentColor`: some older client detail views send
+ * the short name, while the database and API have always used `accentColor`.
+ */
+const brandingFields = {
+  tagline: taglineSchema.optional(),
+  logoUrl: logoUrlSchema.optional(),
+  accentColor: accentColorSchema.optional(),
+  accent: hexColorSchema.optional(),
+}
+
+/** Drops the alias and maps it onto the canonical `accentColor` field. */
+function normalizeBranding(value) {
+  const { accent, ...rest } = value
+  if (rest.accentColor === undefined && accent !== undefined) rest.accentColor = accent
+  return rest
+}
+
 export const businessSetupSchema = z.object({
   name: businessNameSchema,
   slug: slugSchema,
@@ -126,6 +145,21 @@ export const testimonialSubmissionSchema = z.object({
   text: text({ required_error: 'Please write a testimonial' })
     .min(TESTIMONIAL_TEXT_MIN, `Please write at least ${TESTIMONIAL_TEXT_MIN} characters`)
     .max(TESTIMONIAL_TEXT_MAX, `Please keep it under ${TESTIMONIAL_TEXT_MAX} characters`),
+  /**
+   * Answers to the project's custom questions, keyed by question id. The public
+   * route whitelists known ids and enforces required questions; the schema's
+   * job is simply to let the object survive parsing.
+   */
+  answers: z
+    .record(
+      z
+        .union([z.string(), z.number(), z.boolean()])
+        .transform((value) => String(value).trim())
+        .refine((value) => value.length <= 500, 'Use at most 500 characters'),
+    )
+    .refine((value) => Object.keys(value).length <= 50, 'Too many answers')
+    .optional()
+    .default({}),
   // Hidden field: real people never fill it in. Bots usually do.
   website: z.string().max(200).optional().default(''),
 })
@@ -181,8 +215,27 @@ export const projectSchema = z.object({
   slug: slugSchema.optional(),
 })
 
+/** Client creation accepts the same branding fields as the client editor. */
+export const clientCreateSchema = z
+  .object({
+    name: businessNameSchema,
+    slug: slugSchema.optional(),
+    ...brandingFields,
+  })
+  .transform(normalizeBranding)
+
+/**
+ * A client edit (and project edit) may include branding. Some client detail
+ * views send `accent`, while the database column is `accent_color`; both names
+ * are accepted and normalised to `accentColor` before the route persists it.
+ */
 export const projectUpdateSchema = z
-  .object({ name: businessNameSchema.optional(), slug: slugSchema.optional() })
+  .object({
+    name: businessNameSchema.optional(),
+    slug: slugSchema.optional(),
+    ...brandingFields,
+  })
+  .transform(normalizeBranding)
   .refine((value) => Object.keys(value).length > 0, 'Nothing to update')
 
 export const memberSchema = z.object({
@@ -201,6 +254,20 @@ export const memberClientsSchema = z.object({
 export const workspaceUpdateSchema = z.object({
   name: businessNameSchema,
 })
+
+/**
+ * Checkout input.
+ *
+ * A plan name is preferred. A price id is accepted for compatibility with
+ * existing clients, but the route only accepts ids that match the server's
+ * configured prices — it is never passed through to Stripe unchecked.
+ */
+export const billingCheckoutSchema = z
+  .object({
+    plan: z.enum(['starter', 'pro', 'agency']).optional(),
+    priceId: text().max(200).optional(),
+  })
+  .refine((value) => Boolean(value.plan || value.priceId), 'Choose a plan.')
 
 /* -------------------------------------------------------------------------- */
 /* Tags, custom questions, saved widgets                                      */

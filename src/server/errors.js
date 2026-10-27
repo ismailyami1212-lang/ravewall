@@ -29,6 +29,8 @@ export const forbidden = (message = 'You do not have access to that resource.') 
   new AppError(403, 'forbidden', message)
 export const notFound = (message = 'Not found.') => new AppError(404, 'not_found', message)
 export const conflict = (message, fields) => new AppError(409, 'conflict', message, fields)
+export const paymentRequired = (message, fields) =>
+  new AppError(402, 'plan_limit_reached', message, fields)
 export const tooManyRequests = (message) => new AppError(429, 'rate_limited', message)
 
 /**

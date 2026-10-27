@@ -3,6 +3,7 @@ import {
   businessSetupSchema,
   fieldErrors,
   loginSchema,
+  projectUpdateSchema,
   signupSchema,
   slugify,
   slugSchema,
@@ -103,6 +104,27 @@ describe('businessSetupSchema', () => {
   })
 })
 
+describe('projectUpdateSchema', () => {
+  it('accepts branding and normalises the accent alias', () => {
+    const parsed = projectUpdateSchema.parse({
+      tagline: '  Brand systems that ship  ',
+      logoUrl: 'https://cdn.example.com/logo.png',
+      accent: '#7c3aed',
+    })
+    expect(parsed).toEqual({
+      tagline: 'Brand systems that ship',
+      logoUrl: 'https://cdn.example.com/logo.png',
+      accentColor: '#7c3aed',
+    })
+  })
+
+  it('rejects invalid branding and an empty patch', () => {
+    expect(projectUpdateSchema.safeParse({}).success).toBe(false)
+    expect(projectUpdateSchema.safeParse({ logoUrl: 'javascript:alert(1)' }).success).toBe(false)
+    expect(projectUpdateSchema.safeParse({ accent: 'purple' }).success).toBe(false)
+  })
+})
+
 describe('testimonialSubmissionSchema', () => {
   const valid = {
     rating: 5,
@@ -119,6 +141,15 @@ describe('testimonialSubmissionSchema', () => {
 
   it('coerces a numeric string rating', () => {
     expect(testimonialSubmissionSchema.parse({ ...valid, rating: '4' }).rating).toBe(4)
+  })
+
+  it('preserves custom question answers', () => {
+    const parsed = testimonialSubmissionSchema.parse({
+      ...valid,
+      answers: { q_1: 'The calm launch process.', q_2: 5 },
+    })
+    expect(parsed.answers).toEqual({ q_1: 'The calm launch process.', q_2: '5' })
+    expect(testimonialSubmissionSchema.parse(valid).answers).toEqual({})
   })
 
   it('rejects out-of-range ratings and too-short text', () => {

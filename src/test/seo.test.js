@@ -66,15 +66,18 @@ describe('sitemap.xml', () => {
     expect(response.headers['cache-control']).toContain('public')
 
     const body = response.text
+    const origin = server.config.appUrl
     expect(body.startsWith('<?xml')).toBe(true)
     expect(body).toContain('<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">')
-    expect(body).toMatch(/<loc>http:\/\/127\.0\.0\.1[^<]*<\/loc>/)
+    expect(body).toContain(`<loc>${origin}/</loc>`)
     expect(body).toContain('<priority>1.0</priority>')
-    expect(body).toMatch(/<loc>http:\/\/127\.0\.0\.1[^<]*\/privacy<\/loc>/)
-    expect(body).toMatch(/<loc>http:\/\/127\.0\.0\.1[^<]*\/terms<\/loc>/)
-    expect(body).toMatch(/<loc>http:\/\/127\.0\.0\.1[^<]*\/wall\/northwind<\/loc>/)
+    expect(body).toContain(`<loc>${origin}/privacy</loc>`)
+    expect(body).toContain(`<loc>${origin}/terms</loc>`)
+    expect(body).toContain(`<loc>${origin}/wall/northwind</loc>`)
     expect(body).toMatch(
-      /<url><loc>http:\/\/127\.0\.0\.1[^<]*\/wall\/northwind<\/loc><lastmod>[^<]+<\/lastmod>/,
+      new RegExp(
+        `<url><loc>${origin.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}/wall/northwind</loc><lastmod>[^<]+</lastmod>`,
+      ),
     )
 
     // Every URL carries a lastmod, including the static pages.

@@ -28,6 +28,11 @@ export function canManageClients(role) {
   return role === 'owner' || role === 'admin'
 }
 
+/** Billing is owner/admin only. Managers and viewers cannot spend money. */
+export function canManageBilling(role) {
+  return role === 'owner' || role === 'admin'
+}
+
 export function canModerate(role) {
   return role === 'owner' || role === 'admin' || role === 'manager'
 }

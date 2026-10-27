@@ -17,11 +17,11 @@ const BUSINESS = {
   updatedAt: '2026-01-01T00:00:00.000Z',
 }
 
-function stubFetch() {
+function stubFetch(questions: unknown[] = []) {
   const mock = vi.fn(async (input: RequestInfo | URL, _init?: RequestInit) => {
     const url = String(input)
     if (url.includes('/api/public/business/')) {
-      return jsonResponse({ data: { business: BUSINESS } })
+      return jsonResponse({ data: { business: BUSINESS, questions } })
     }
     if (url.includes('/api/public/submit/')) {
       return jsonResponse({ data: { accepted: true, status: 'pending' } }, 201)
@@ -126,6 +126,49 @@ describe('Collect page', () => {
       company: 'Northwind',
       text: 'They shipped our new pricing page a week early.',
     })
+  })
+
+  it('renders custom questions and sends their answers with the testimonial', async () => {
+    const fetchMock = stubFetch([
+      { id: 'q_love', label: 'What did you love most?', type: 'long', required: true },
+      { id: 'q_again', label: 'How likely are you to return?', type: 'rating', required: false },
+    ])
+    renderCollect()
+    await screen.findByRole('heading', { name: /leave a testimonial/i })
+
+    await userEvent.click(screen.getAllByRole('radio')[4])
+    await userEvent.type(screen.getByLabelText('Your name'), 'Mara Ellis')
+    await userEvent.type(
+      screen.getByLabelText('Your testimonial'),
+      'They shipped our new pricing page a week early.',
+    )
+    await userEvent.type(screen.getByLabelText('What did you love most?'), 'The calm launch process.')
+    await userEvent.selectOptions(screen.getByLabelText(/How likely are you to return\?/), '5')
+    await userEvent.click(screen.getByRole('button', { name: /submit testimonial/i }))
+
+    expect(await screen.findByRole('heading', { name: /thank you/i })).toBeInTheDocument()
+    const submitCall = fetchMock.mock.calls.find((call) => String(call[0]).includes('/submit/'))
+    const body = JSON.parse(String((submitCall?.[1] as RequestInit).body))
+    expect(body.answers).toEqual({ q_love: 'The calm launch process.', q_again: '5' })
+  })
+
+  it('blocks submission when a required custom question is unanswered', async () => {
+    const fetchMock = stubFetch([
+      { id: 'q_love', label: 'What did you love most?', type: 'long', required: true },
+    ])
+    renderCollect()
+    await screen.findByRole('heading', { name: /leave a testimonial/i })
+
+    await userEvent.click(screen.getAllByRole('radio')[4])
+    await userEvent.type(screen.getByLabelText('Your name'), 'Mara Ellis')
+    await userEvent.type(
+      screen.getByLabelText('Your testimonial'),
+      'They shipped our new pricing page a week early.',
+    )
+    await userEvent.click(screen.getByRole('button', { name: /submit testimonial/i }))
+
+    expect(await screen.findByText('Please answer this question.')).toBeInTheDocument()
+    expect(fetchMock).toHaveBeenCalledTimes(1)
   })
 
   it('surfaces a server rejection without losing the form', async () => {

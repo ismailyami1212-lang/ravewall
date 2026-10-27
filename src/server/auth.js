@@ -20,7 +20,6 @@ import { ANONYMOUS, userActor } from './policies.js'
 import {
   deleteSessionByHash,
   findSessionWithUser,
-  getBusinessByOwner,
   insertSession,
   pruneExpiredSessions,
 } from './repositories.js'
@@ -202,9 +201,10 @@ export function attachActor(db, config) {
         const clients = await listClients(db, membership.workspaceId, req.clientScope)
         req.business = clients[0] ?? null
       } else {
-        // No workspace yet (a brand-new account): fall back to the legacy
-        // owner lookup so the setup flow still works.
-        req.business = await getBusinessByOwner(db, resolved.user.id)
+        // Workspace membership is the sole authority for tenant data. A user
+        // with no active membership (for example, someone removed from a
+        // workspace) must not fall back to legacy owner-user ownership.
+        req.business = null
       }
 
       next()

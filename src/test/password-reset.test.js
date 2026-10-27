@@ -54,6 +54,20 @@ describe('password reset request', () => {
     expect(existing.body.data.message).toMatch(/if an account exists/i)
   })
 
+  it('builds the reset link from APP_URL, never the request Host header', async () => {
+    await request(server.app)
+      .post('/api/auth/forgot-password')
+      .set('Host', 'attacker.example')
+      .send({ email: 'mara@example.com' })
+      .expect(202)
+
+    const raw = await fsp.readFile(emailLog, 'utf8')
+    const records = raw.trim().split('\n').filter(Boolean).map((line) => JSON.parse(line))
+    const email = records[records.length - 1]
+    expect(email.text).toContain(`${server.config.appUrl}/reset-password?token=`)
+    expect(email.text).not.toContain('attacker.example')
+  })
+
   it('stores only an HMAC of the token — never the raw value', async () => {
     await requestReset('mara@example.com', 202)
     const token = await latestResetUrl()

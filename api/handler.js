@@ -14,8 +14,8 @@
  * slow every cold start. Migrations are an administrative step
  * (`npm run migrate`), and boot only verifies the schema is present.
  *
- * The runtime therefore needs just two secrets: SUPABASE_DB_URL and
- * SESSION_SECRET. SUPABASE_MIGRATION_DB_URL is deliberately not required here.
+ * The runtime therefore needs SUPABASE_DB_URL, SESSION_SECRET and (in
+ * production) APP_URL. SUPABASE_MIGRATION_DB_URL is deliberately not required here.
  */
 import { createApp } from '../src/server/app.js'
 import { loadConfig } from '../src/server/config.js'

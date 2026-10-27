@@ -1,8 +1,8 @@
 import { useEffect, useState } from 'react'
 import { Link, useParams } from 'react-router-dom'
-import { TESTIMONIAL_TEXT_MAX, TESTIMONIAL_TEXT_MIN } from '../../shared/constants.js'
+import { MAX_RATING, TESTIMONIAL_TEXT_MAX, TESTIMONIAL_TEXT_MIN } from '../../shared/constants.js'
 import { testimonialSubmissionSchema, validate } from '../../shared/validation.js'
-import { api, type Business } from '../api'
+import { api, type Business, type PublicQuestion } from '../api'
 import { Button, Field, Input, Spinner, Textarea } from '../components/Primitives'
 import { StarRating } from '../components/Stars'
 import { useToast } from '../components/Toast'
@@ -13,11 +13,13 @@ export function Collect() {
   const { notify } = useToast()
 
   const [business, setBusiness] = useState<Business | null>(null)
+  const [questions, setQuestions] = useState<PublicQuestion[]>([])
   const [loading, setLoading] = useState(true)
   const [loadError, setLoadError] = useState('')
 
   const [rating, setRating] = useState(0)
   const [form, setForm] = useState({ name: '', company: '', text: '', website: '' })
+  const [answers, setAnswers] = useState<Record<string, string>>({})
   const [errors, setErrors] = useState<Record<string, string>>({})
   const [submitting, setSubmitting] = useState(false)
   const [submitted, setSubmitted] = useState(false)
@@ -28,7 +30,10 @@ export function Collect() {
     api
       .publicBusiness(slug)
       .then((result) => {
-        if (!cancelled) setBusiness(result.business)
+        if (!cancelled) {
+          setBusiness(result.business)
+          setQuestions(result.questions ?? [])
+        }
       })
       .catch((error) => {
         if (!cancelled) {
@@ -43,14 +48,39 @@ export function Collect() {
     }
   }, [slug])
 
+  function setAnswer(questionId: string, value: string) {
+    setAnswers((current) => ({ ...current, [questionId]: value }))
+    setErrors((current) => {
+      if (!current[questionId]) return current
+      const next = { ...current }
+      delete next[questionId]
+      return next
+    })
+  }
+
   async function handleSubmit(event: React.FormEvent) {
     event.preventDefault()
-    const parsed = validate(testimonialSubmissionSchema, { ...form, rating })
-    if (!parsed.ok) {
-      setErrors(parsed.errors)
+
+    // Empty optional answers are not meaningful; leave them out so the server
+    // only receives the answers a respondent actually chose to give.
+    const answered = Object.fromEntries(
+      Object.entries(answers).filter(([, value]) => value.trim() !== ''),
+    )
+    const parsed = validate(testimonialSubmissionSchema, { ...form, rating, answers: answered })
+
+    const missing: Record<string, string> = {}
+    for (const question of questions) {
+      if (question.required && !answered[question.id]?.trim()) {
+        missing[question.id] = 'Please answer this question.'
+      }
+    }
+
+    if (!parsed.ok || Object.keys(missing).length > 0) {
+      setErrors({ ...(parsed.ok ? {} : parsed.errors), ...missing })
       notify('Please check the highlighted fields.', 'error')
       return
     }
+
     setErrors({})
     setSubmitting(true)
     try {
@@ -172,6 +202,51 @@ export function Collect() {
                   {remaining} characters left
                 </p>
               ) : null}
+
+              {questions.map((question) => {
+                const inputId = `q-${question.id}`
+                const value = answers[question.id] ?? ''
+                const error = errors[question.id]
+                const common = {
+                  id: inputId,
+                  value,
+                  required: question.required,
+                  'aria-invalid': error ? true : undefined,
+                  onChange: (
+                    event: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement>,
+                  ) => setAnswer(question.id, event.target.value),
+                }
+
+                return (
+                  <Field
+                    key={question.id}
+                    label={question.label}
+                    htmlFor={inputId}
+                    error={error}
+                    optional={!question.required}
+                  >
+                    {question.type === 'long' ? (
+                      <Textarea {...common} rows={3} maxLength={500} />
+                    ) : question.type === 'rating' ? (
+                      <select {...common} className="input input-select">
+                        <option value="">Select a rating</option>
+                        {Array.from({ length: MAX_RATING }, (_, index) => (
+                          <option key={index + 1} value={String(index + 1)}>
+                            {index + 1} / {MAX_RATING}
+                          </option>
+                        ))}
+                      </select>
+                    ) : (
+                      <Input
+                        {...common}
+                        type="text"
+                        maxLength={500}
+                        autoComplete={question.type === 'company' ? 'organization' : undefined}
+                      />
+                    )}
+                  </Field>
+                )
+              })}
 
               {/* Honeypot — hidden from people, tempting for bots. */}
               <div className="honeypot" aria-hidden="true">

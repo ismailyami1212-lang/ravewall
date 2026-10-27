@@ -1,7 +1,9 @@
 import { Router } from 'express'
 import { businessSetupSchema, businessUpdateSchema, slugSchema } from '../../shared/validation.js'
+import { planLimits } from '../../shared/plans.js'
+import { canManageClients } from '../access.js'
 import { requireUser } from '../auth.js'
-import { conflict } from '../errors.js'
+import { conflict, forbidden } from '../errors.js'
 import { asyncHandler, parse, send } from '../http.js'
 import { createClient, updateClient } from '../workspaces.js'
 import { isSlugTaken, publicBusiness, updateBusiness } from '../repositories.js'
@@ -40,6 +42,7 @@ export function createBusinessRouter({ db }) {
       if (!req.workspace) {
         throw conflict('Create a workspace first.')
       }
+      if (!canManageClients(req.role)) throw forbidden()
       const input = parse(businessSetupSchema, req.body)
       // The unique index is the real guard; this is only a friendlier message.
       if (await isSlugTaken(db, input.slug)) {
@@ -47,12 +50,15 @@ export function createBusinessRouter({ db }) {
           slug: 'That link name is taken. Try another one.',
         })
       }
+      const limits = planLimits(req.workspace.plan)
       // Creating a client also creates its default project, so the collection
       // link and wall work immediately.
       const business = await createClient(db, {
         workspaceId: req.workspace.id,
         ownerUserId: req.user.id,
         ...input,
+        maxClients: limits.clients,
+        plan: req.workspace.plan,
       })
       send(res, { business: publicBusiness(business) }, 201)
     }),

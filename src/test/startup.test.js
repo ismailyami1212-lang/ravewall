@@ -111,6 +111,7 @@ describe('production server startup', () => {
       env: {
         NODE_ENV: 'production',
         SESSION_SECRET: 'x'.repeat(48),
+        APP_URL: 'https://ravewall.example.com',
         // Reserved for documentation; nothing listens here.
         SUPABASE_DB_URL: 'postgresql://nobody:nobody@127.0.0.1:59999/nothing',
       },

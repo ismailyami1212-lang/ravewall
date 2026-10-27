@@ -104,6 +104,16 @@ async function main() {
       record(`table exists: ${table}`, tables.has(table))
     }
 
+    // ---------------------------------------------------------------- columns
+    const { rows: columnRows } = await db.query(
+      `SELECT column_name FROM information_schema.columns
+        WHERE table_schema = 'public' AND table_name = 'workspaces'`,
+    )
+    const workspaceColumns = new Set(columnRows.map((row) => row.column_name))
+    for (const column of ['stripe_customer_id', 'stripe_subscription_id', 'subscription_status']) {
+      record(`column exists: workspaces.${column}`, workspaceColumns.has(column))
+    }
+
     // ---------------------------------------------------------------- indexes
     const expectedIndexes = [
       'users_email_unique',
@@ -131,6 +141,9 @@ async function main() {
       'widget_configs_project_idx',
       // 0006 — saved widgets
       'widget_configs_project_status_idx',
+      // 0007 — Stripe billing
+      'workspaces_stripe_customer_unique',
+      'workspaces_stripe_subscription_unique',
     ]
     const { rows: indexRows } = await db.query(
       `SELECT indexname FROM pg_indexes WHERE schemaname = 'public'`,

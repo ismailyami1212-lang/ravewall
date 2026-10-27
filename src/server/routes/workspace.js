@@ -1,5 +1,6 @@
 import { Router } from 'express'
 import {
+  clientCreateSchema,
   memberClientsSchema,
   memberSchema,
   memberUpdateSchema,
@@ -9,9 +10,11 @@ import {
 } from '../../shared/validation.js'
 import { canManageClients, canManageTeam, canModerate, isUnscoped } from '../access.js'
 import { requireUser } from '../auth.js'
+import { renderTeamInviteEmail, sendEmail } from '../email.js'
 import { forbidden, notFound, badRequest, conflict } from '../errors.js'
 import { asyncHandler, parse, send } from '../http.js'
 import { findUserByEmail, publicBusiness } from '../repositories.js'
+import { planLimits } from '../../shared/plans.js'
 import {
   addMember,
   countClients,
@@ -42,9 +45,41 @@ import {
  * Every handler resolves the client/project through `requireClientAccess` /
  * `requireProjectAccess`, which 404 on anything outside the caller's scope.
  */
-export function createWorkspaceRouter({ db }) {
+export function createWorkspaceRouter({ db, config = {}, logger = console }) {
   const router = Router()
   router.use(requireUser)
+
+  /** Absolute in-app link. Never derived from the request Host header. */
+  function appLink(path) {
+    if (!config.appUrl) return null
+    return `${String(config.appUrl).replace(/\/$/, '')}${path}`
+  }
+
+  async function sendTeamInvite({ recipient, workspaceName, inviterName, role }) {
+    const message = renderTeamInviteEmail({
+      recipientName: recipient.name,
+      workspaceName,
+      inviterName,
+      role,
+      dashboardUrl: appLink('/dashboard'),
+    })
+    try {
+      await sendEmail(
+        { to: recipient.email, subject: message.subject, html: message.html, text: message.text },
+        {
+          resendApiKey: config.resendApiKey ?? null,
+          emailFrom: config.emailFrom ?? 'RaveWall <onboarding@resend.dev>',
+          emailTestRecipient: config.emailTestRecipient ?? null,
+          logger,
+        },
+      )
+    } catch (error) {
+      // Adding a teammate must never fail because an email could not be sent.
+      logger.error?.('[kudos] team invitation email failed', {
+        message: error instanceof Error ? error.message : String(error),
+      })
+    }
+  }
 
   /** Every workspace route needs a resolvable, in-scope workspace.
    *  A caller who passes an unknown `x-workspace-id` (or none at all) gets a
@@ -63,6 +98,7 @@ export function createWorkspaceRouter({ db }) {
         workspace: req.workspace,
         role: req.role,
         memberships: req.memberships,
+        limits: planLimits(req.workspace.plan),
         counts: { clients: clients.length, projects: projects.length },
       })
     }),
@@ -138,13 +174,18 @@ export function createWorkspaceRouter({ db }) {
     '/clients',
     asyncHandler(async (req, res) => {
       if (!canManageClients(req.role)) throw forbidden()
-      const input = parse(projectSchema.extend({}), req.body)
+      const input = parse(clientCreateSchema, req.body)
+      const limits = planLimits(req.workspace.plan)
       const business = await createClient(db, {
         workspaceId: req.workspace.id,
         ownerUserId: req.user.id,
         name: input.name,
         slug: input.slug ?? slugify(input.name),
-        accentColor: '#15803d',
+        tagline: input.tagline,
+        logoUrl: input.logoUrl,
+        accentColor: input.accentColor ?? '#15803d',
+        maxClients: limits.clients,
+        plan: req.workspace.plan,
       })
       send(res, { client: publicBusiness(business) }, 201)
     }),
@@ -294,6 +335,12 @@ export function createWorkspaceRouter({ db }) {
         })
       }
       const member = await addMember(db, req.workspace.id, user.id, input.role)
+      await sendTeamInvite({
+        recipient: user,
+        workspaceName: req.workspace.name,
+        inviterName: req.user.name,
+        role: input.role,
+      })
       send(res, { member: { ...member, name: user.name, email: user.email } }, 201)
     }),
   )
@@ -303,8 +350,8 @@ export function createWorkspaceRouter({ db }) {
     asyncHandler(async (req, res) => {
       if (!canManageTeam(req.role)) throw forbidden()
       const input = parse(memberUpdateSchema, req.body)
-      if (req.params.userId === req.user.id && input.role !== 'owner') {
-        throw conflict('You cannot change your own owner role.')
+      if (req.params.userId === req.user.id) {
+        throw conflict('You cannot change your own role.')
       }
       if (input.role !== 'owner') {
         const owners = await countOwners(db, req.workspace.id)

@@ -5,6 +5,7 @@ import cookieParser from 'cookie-parser'
 import express from 'express'
 import helmet from 'helmet'
 import { attachActor } from './auth.js'
+import { createStripeClient } from './billing.js'
 import { AppError, notFound } from './errors.js'
 import { injectNotFoundMetadata, injectWallMetadata } from './html-meta.js'
 import { asyncHandler, originGuard } from './http.js'
@@ -13,10 +14,12 @@ import { PostgresRateLimiter, SlidingWindowLimiter, rateLimit } from './rateLimi
 import { listIndexableWalls } from './repositories.js'
 import { createAccountRouter } from './routes/account.js'
 import { createAuthRouter } from './routes/auth.js'
+import { createBillingRouter } from './routes/billing.js'
 import { createBusinessRouter } from './routes/business.js'
 import { createContentRouter } from './routes/content.js'
 import { createPublicRouter } from './routes/public.js'
 import { createTestimonialRouter } from './routes/testimonials.js'
+import { createWebhookRouter } from './routes/webhooks.js'
 import { createWorkspaceRouter } from './routes/workspace.js'
 
 /**
@@ -57,10 +60,11 @@ function escapeXml(value) {
 }
 
 /** Public absolute origin used in canonical URLs and the sitemap. */
-function publicOrigin(req, config) {
-  if (config.appUrl) return String(config.appUrl).replace(/\/$/, '')
-  // `req.protocol` honours X-Forwarded-Proto when trust proxy is enabled.
-  return `${req.protocol}://${req.get('host')}`.replace(/\/$/, '')
+function publicOrigin(config) {
+  if (!config.appUrl) {
+    throw new Error('APP_URL is required to build public absolute URLs.')
+  }
+  return String(config.appUrl).replace(/\/$/, '')
 }
 
 function resolveIndexFile(config) {
@@ -77,10 +81,11 @@ function resolveIndexFile(config) {
  * Exported separately from the bootstrap so tests can mount it without opening a
  * socket.
  *
- * @param {{ db: any, config: any, logger?: Console }} deps
+ * @param {{ db: any, config: any, logger?: Console, stripe?: any }} deps
  */
-export function createApp({ db, config, logger = console }) {
+export function createApp({ db, config, logger = console, stripe = null }) {
   const app = express()
+  const stripeClient = stripe ?? createStripeClient(config)
 
   app.disable('x-powered-by')
   app.set('trust proxy', config.trustProxy ? 1 : false)
@@ -120,7 +125,16 @@ export function createApp({ db, config, logger = console }) {
     }),
   )
   app.use(compression())
-  app.use(express.json({ limit: '64kb' }))
+  app.use(
+    express.json({
+      limit: '64kb',
+      // Stripe signs the exact bytes it sent. Keep the raw body for webhook
+      // signature verification; every other route uses the parsed object.
+      verify: (req, _res, buffer) => {
+        if (req.path === '/api/webhooks/stripe') req.rawBody = Buffer.from(buffer)
+      },
+    }),
+  )
   app.use(cookieParser())
 
   // ------------------------------------------------------------------ CORS
@@ -163,10 +177,12 @@ export function createApp({ db, config, logger = console }) {
   api.use('/auth', createAuthRouter({ db, config, limiters }))
   api.use('/account', createAccountRouter({ db, config, limiters }))
   api.use('/business', createBusinessRouter({ db }))
+  api.use('/billing', createBillingRouter({ db, config, stripe: stripeClient }))
+  api.use('/webhooks', createWebhookRouter({ db, config, stripe: stripeClient }))
   api.use('/testimonials', createTestimonialRouter({ db }))
-  api.use('/workspace', createWorkspaceRouter({ db }))
+  api.use('/workspace', createWorkspaceRouter({ db, config, logger }))
   api.use('/projects', createContentRouter({ db }))
-  api.use('/public', createPublicRouter({ db, config, limiters }))
+  api.use('/public', createPublicRouter({ db, config, limiters, logger }))
   api.use((_req, _res, next) => next(notFound('Unknown API endpoint.')))
 
   app.use('/api', api)
@@ -187,7 +203,7 @@ export function createApp({ db, config, logger = console }) {
   // thin content and is also tagged `noindex` by the HTML route below.
   app.get('/sitemap.xml', async (req, res) => {
     try {
-      const base = publicOrigin(req, config)
+      const base = publicOrigin(config)
       const siteLastmod = new Date().toISOString()
       const walls = await listIndexableWalls(db)
       const entries = [
@@ -231,7 +247,7 @@ export function createApp({ db, config, logger = console }) {
     asyncHandler(async (req, res, next) => {
       if (!hasBuild) return next()
 
-      const origin = publicOrigin(req, config)
+      const origin = publicOrigin(config)
       const template = await readIndexTemplate()
       const wall = await findPublicWall(db, req.params.slug)
 

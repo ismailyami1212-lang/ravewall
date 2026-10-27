@@ -151,10 +151,76 @@ const requiredSchema = z.object({
     ),
 })
 
-/** Optional: a separate connection for migrations (see buildConfig). */
+/** An optional absolute http(s) origin, with no path, query or fragment. */
+const optionalAppUrl = z
+  .string()
+  .optional()
+  .transform((value) => {
+    if (value === undefined || value.trim() === '') return undefined
+    return value.trim().replace(/\/$/, '')
+  })
+  .refine((value) => {
+    if (value === undefined) return true
+    try {
+      const url = new URL(value)
+      return (
+        (url.protocol === 'http:' || url.protocol === 'https:') &&
+        url.pathname === '/' &&
+        !url.search &&
+        !url.hash
+      )
+    } catch {
+      return false
+    }
+  }, 'APP_URL must be an absolute http(s) origin, for example https://ravewall.example.com.')
+
+/** An optional non-empty string. An empty value means "not set". */
+const optionalTrimmed = z
+  .string()
+  .optional()
+  .transform((value) => {
+    if (value === undefined || value.trim() === '') return undefined
+    return value.trim()
+  })
+
+/** A configured value that must have the shape Stripe uses for its object ids. */
+const optionalStripeValue = (name, prefix, description) =>
+  optionalTrimmed.refine(
+    (value) => value === undefined || value.startsWith(prefix),
+    `${name} must be a ${description} (starting with "${prefix}").`,
+  )
+
+/** Optional: Stripe billing. Supplying any value enables and requires all of them. */
 const optionalSchema = z.object({
+  APP_URL: optionalAppUrl,
   SUPABASE_MIGRATION_DB_URL: optionalPostgresUrl('SUPABASE_MIGRATION_DB_URL'),
+  STRIPE_SECRET_KEY: optionalTrimmed,
+  STRIPE_WEBHOOK_SECRET: optionalStripeValue(
+    'STRIPE_WEBHOOK_SECRET',
+    'whsec_',
+    'Stripe webhook signing secret',
+  ),
+  STRIPE_PRICE_STARTER: optionalStripeValue(
+    'STRIPE_PRICE_STARTER',
+    'price_',
+    'Stripe price id',
+  ),
+  STRIPE_PRICE_PRO: optionalStripeValue('STRIPE_PRICE_PRO', 'price_', 'Stripe price id'),
+  STRIPE_PRICE_AGENCY: optionalStripeValue(
+    'STRIPE_PRICE_AGENCY',
+    'price_',
+    'Stripe price id',
+  ),
 })
+
+/** Every variable needed to sell a subscription. */
+const STRIPE_KEYS = [
+  'STRIPE_SECRET_KEY',
+  'STRIPE_WEBHOOK_SECRET',
+  'STRIPE_PRICE_STARTER',
+  'STRIPE_PRICE_PRO',
+  'STRIPE_PRICE_AGENCY',
+]
 
 /**
  * @param {Record<string, string | undefined>} [env]
@@ -166,11 +232,38 @@ export function loadConfig(env = process.env) {
 
   const required = requiredSchema.safeParse(env)
   const optional = optionalSchema.safeParse(env)
+  const nodeEnv = env.NODE_ENV || 'development'
 
   const issues = [
     ...(required.success ? [] : required.error.issues),
     ...(optional.success ? [] : optional.error.issues),
   ]
+
+  // Billing is opt-in: a deployment can run without Stripe. The moment any
+  // Stripe variable is present, however, all of them are required — a partial
+  // configuration would otherwise boot and fail only when a customer tries to
+  // pay, or worse, accept a webhook we cannot verify.
+  if (optional.success) {
+    const supplied = STRIPE_KEYS.filter((key) => Boolean(optional.data[key]))
+    if (supplied.length > 0) {
+      for (const key of STRIPE_KEYS) {
+        if (optional.data[key]) continue
+        issues.push({
+          path: [key],
+          message: `${key} is required when Stripe billing is configured.`,
+        })
+      }
+    }
+  }
+
+  if (nodeEnv === 'production' && !String(env.APP_URL ?? '').trim()) {
+    issues.push({
+      path: ['APP_URL'],
+      message:
+        'APP_URL is required when NODE_ENV=production. Set it to the deployment origin, ' +
+        'for example https://ravewall.example.com.',
+    })
+  }
   if (issues.length > 0) {
     const details = issues
       .map((issue) => `  - ${issue.path.join('.') || 'environment'}: ${issue.message}`)
@@ -181,7 +274,6 @@ export function loadConfig(env = process.env) {
     )
   }
 
-  const nodeEnv = env.NODE_ENV || 'development'
   if (!['development', 'test', 'production'].includes(nodeEnv)) {
     throw new Error(`NODE_ENV must be development, test or production (received "${nodeEnv}").`)
   }
@@ -199,6 +291,19 @@ function buildConfig(env) {
   // when it is configured.
   const migrationDatabaseUrl = env.SUPABASE_MIGRATION_DB_URL || env.SUPABASE_DB_URL
 
+  const stripePrices = Object.freeze({
+    starter: env.STRIPE_PRICE_STARTER || null,
+    pro: env.STRIPE_PRICE_PRO || null,
+    agency: env.STRIPE_PRICE_AGENCY || null,
+  })
+  const billingEnabled = Boolean(
+    env.STRIPE_SECRET_KEY &&
+      env.STRIPE_WEBHOOK_SECRET &&
+      stripePrices.starter &&
+      stripePrices.pro &&
+      stripePrices.agency,
+  )
+
   return Object.freeze({
     projectRoot,
     nodeEnv: env.NODE_ENV,
@@ -207,8 +312,22 @@ function buildConfig(env) {
 
     host: env.HOST || '0.0.0.0',
     port: readInteger(env.PORT, 3001),
-    /** Public origin of the deployment; used for absolute links in emails/logs. */
+    /**
+     * Public origin of the deployment. Required in production and used for all
+     * absolute links (password resets, sitemap and canonical metadata).
+     */
     appUrl: env.APP_URL ? String(env.APP_URL).replace(/\/$/, '') : null,
+
+    /**
+     * Stripe billing. Optional as a group: when `billingEnabled` is false the
+     * billing routes return 503, but the rest of the product keeps working.
+     * Price ids are mapped server-side so a caller can never choose an arbitrary
+     * price or plan.
+     */
+    billingEnabled,
+    stripeSecretKey: env.STRIPE_SECRET_KEY || null,
+    stripeWebhookSecret: env.STRIPE_WEBHOOK_SECRET || null,
+    stripePrices,
 
     /** Postgres connection string used to serve requests. Never exposed to the client. */
     databaseUrl: env.SUPABASE_DB_URL,
@@ -273,7 +392,14 @@ function buildConfig(env) {
  */
 export function describeConfig(env) {
   const safe = { ...env }
-  for (const key of ['SUPABASE_DB_URL', 'SUPABASE_MIGRATION_DB_URL', 'SESSION_SECRET', 'RESEND_API_KEY']) {
+  for (const key of [
+    'SUPABASE_DB_URL',
+    'SUPABASE_MIGRATION_DB_URL',
+    'SESSION_SECRET',
+    'RESEND_API_KEY',
+    'STRIPE_SECRET_KEY',
+    'STRIPE_WEBHOOK_SECRET',
+  ]) {
     if (safe[key]) safe[key] = '[redacted]'
   }
   return safe

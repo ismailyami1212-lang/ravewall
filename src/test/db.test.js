@@ -38,6 +38,7 @@ describe('migrations', () => {
       '0004_password_resets.sql',
       '0005_workspaces_projects.sql',
       '0006_saved_widgets.sql',
+      '0007_stripe_billing.sql',
     ])
     expect(await tableNames(db)).toEqual([
       'businesses',
@@ -64,8 +65,8 @@ describe('migrations', () => {
     const second = await runMigrations(db, { logger: silent })
 
     expect(second.applied).toEqual([])
-    expect(second.skipped).toBe(6)
-    expect(await listAppliedMigrations(db)).toHaveLength(6)
+    expect(second.skipped).toBe(7)
+    expect(await listAppliedMigrations(db)).toHaveLength(7)
   })
 
   it('records each version with a checksum', async () => {
@@ -80,6 +81,7 @@ describe('migrations', () => {
       '0004_password_resets.sql',
       '0005_workspaces_projects.sql',
       '0006_saved_widgets.sql',
+      '0007_stripe_billing.sql',
     ])
     for (const row of rows) expect(row.checksum).toMatch(/^[0-9a-f]{64}$/)
   })

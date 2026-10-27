@@ -20,6 +20,10 @@ function signup(app, email, name = 'Owner') {
 async function ownerWorkspace(app) {
   const alice = await signup(app, 'alice@example.com', 'Alice')
   const ws = (await alice.get('/api/account').expect(200)).body.data.workspace.id
+  // These tests exercise content, not billing, and several need a second
+  // client. Put the workspace on Starter so the Free client cap does not
+  // obscure the behaviour under test.
+  await server.sql("UPDATE workspaces SET plan = 'starter' WHERE id = $1", [ws])
   const client = await alice
     .set('x-workspace-id', ws)
     .post('/api/workspace/clients')
@@ -74,6 +78,50 @@ describe('custom questions', () => {
       .send({ label: 'Changed' })
       .expect(200)
     expect(updated.body.data.question.label).toBe('Changed')
+  })
+
+  it('serves custom questions publicly and stores the respondent answers', async () => {
+    const { alice, ws, project } = await ownerWorkspace(server.app)
+    const created = await alice
+      .set('x-workspace-id', ws)
+      .post(`/api/projects/projects/${project.id}/questions`)
+      .send({ label: 'What did you love most?', type: 'long', required: true })
+      .expect(201)
+    const questionId = created.body.data.question.id
+
+    const publicPage = await request(server.app)
+      .get(`/api/public/business/${project.slug}`)
+      .expect(200)
+    expect(publicPage.body.data.questions).toEqual([
+      expect.objectContaining({ id: questionId, label: 'What did you love most?', required: true }),
+    ])
+
+    // Required questions are enforced server-side, not just in the browser.
+    const missing = await request(server.app)
+      .post(`/api/public/submit/${project.slug}`)
+      .send({
+        rating: 5,
+        name: 'Mara Ellis',
+        text: 'They shipped ahead of schedule and the work was excellent.',
+      })
+      .expect(400)
+    expect(missing.body.error.fields.answers).toBeDefined()
+
+    await request(server.app)
+      .post(`/api/public/submit/${project.slug}`)
+      .send({
+        rating: 5,
+        name: 'Mara Ellis',
+        text: 'They shipped ahead of schedule and the work was excellent.',
+        answers: { [questionId]: 'The strategy work was outstanding.' },
+      })
+      .expect(201)
+
+    const rows = await server.sql(
+      'SELECT answers FROM testimonials WHERE project_id = $1 ORDER BY created_at DESC LIMIT 1',
+      [project.id],
+    )
+    expect(rows[0].answers).toEqual({ [questionId]: 'The strategy work was outstanding.' })
   })
 
   it('keeps a manager from editing a question in another client', async () => {

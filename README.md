@@ -108,7 +108,7 @@ All settings come from the environment. See `.env.example` for the annotated lis
 | `NODE_ENV` | no | `development` | `development` / `test` / `production` |
 | `PORT` | no | `3001` | Most platforms inject this. |
 | `HOST` | no | `0.0.0.0` | Keep as-is behind a proxy. |
-| `APP_URL` | no | — | Public origin, e.g. `https://ravewall.example.com` |
+| `APP_URL` | **yes in production** | — | Public origin, e.g. `https://ravewall.example.com`. Used for password-reset links, canonical URLs and the sitemap. |
 | `PG_POOL_MAX` | no | `5` in production | Keep at 1–3 on serverless. |
 | `SESSION_TTL_DAYS` | no | `30` | Session lifetime. |
 | `ALLOWED_ORIGINS` | no | — | Extra origins allowed to call the API. |
@@ -120,16 +120,21 @@ All settings come from the environment. See `.env.example` for the annotated lis
 | `RESEND_API_KEY` | no | — | Enables transactional email. Absent → development transport (logged, not sent). |
 | `EMAIL_FROM` | no | `RaveWall <onboarding@resend.dev>` | Sender. The default is Resend's **test** sender, deliverable only to the Resend account owner. |
 | `EMAIL_TEST_RECIPIENT` | no | — | Optional guard: when set, only this address receives mail; all other recipients are skipped locally. |
+| `STRIPE_SECRET_KEY` | with billing | — | Enables Stripe Checkout and the Customer Portal when the full billing group is present. |
+| `STRIPE_WEBHOOK_SECRET` | with billing | — | Verifies the `stripe-signature` on `/api/webhooks/stripe`. |
+| `STRIPE_PRICE_STARTER` / `_PRO` / `_AGENCY` | with billing | — | Server-side price ids for the paid plans. The browser can never submit an arbitrary price. |
 
 Startup **fails** when a required value is missing, naming every problem at once. There is no
 fallback storage engine.
 
-### Email (password reset)
+### Email (transactional)
 
-The password-reset architecture is complete and does not depend on a verified domain:
+Resend delivers password resets, new-testimonial alerts to workspace owners/admins (and managers
+scoped to that client), and team invitations. The same three modes apply to every trigger:
 
-- **No key** → development transport. The reset link is logged (and appended to `DEV_EMAIL_LOG`
-  when set), so the full flow is testable without an inbox.
+- **No key** → development transport. Messages are logged (and appended to `DEV_EMAIL_LOG` when
+  set), so the full flow is testable without an inbox. A missing key never blocks a submission or
+  an invitation.
 - **Key + test sender** (`onboarding@resend.dev`) → Resend's shared sender. Resend only delivers
   it to the account owner's own address; it is for technical verification, **not** for real
   customers. Set `EMAIL_TEST_RECIPIENT` to that address so the server never even attempts a send
@@ -138,6 +143,25 @@ The password-reset architecture is complete and does not depend on a verified do
   and set `EMAIL_FROM` to an address on it. No code change is needed.
 
 The server logs the active email mode at boot and warns loudly when the test sender is in use.
+
+### Stripe billing
+
+Billing is optional as a group. With no `STRIPE_*` values the product runs normally on the Free
+plan and the billing routes return `503 billing_unavailable`. Supplying any Stripe value makes all
+five required, so checkout cannot be half-configured and webhooks cannot be accepted without a
+signing secret.
+
+- **Checkout** — `POST /api/billing/checkout` with `{ "plan": "starter" }` (or a configured
+  `priceId`). Owner/admin only. The workspace id goes into the Checkout Session and Subscription
+  metadata; prices are resolved from server configuration.
+- **Portal** — `POST /api/billing/portal` opens the Stripe Customer Portal for payment methods,
+  invoices and cancellation. Owner/admin only.
+- **Webhook** — `POST /api/webhooks/stripe` verifies `stripe-signature` against the raw body before
+  parsing anything. It handles `checkout.session.completed`, `customer.subscription.updated` and
+  `customer.subscription.deleted`; cancellation returns the workspace to Free.
+- **Entitlements** — Free = 1 client, Starter = 3, Pro = 10, Agency = unlimited. Projects are
+  unlimited on every plan. The client limit is enforced inside the creation transaction, so
+  concurrent requests cannot exceed it.
 
 ---
 
@@ -213,9 +237,10 @@ Versioned SQL lives in `supabase/migrations/`:
 0004_password_resets.sql     password reset tokens
 0005_workspaces_projects.sql workspaces, members, projects; backfills every business
 0006_saved_widgets.sql       widget public_id + status + created_by (saved-widget embeds)
+0007_stripe_billing.sql      workspace Stripe customer/subscription ids + status
 ```
 
-Migrations `0005` and `0006` are purely additive: they create tables/columns and backfill, but
+Migrations `0005`–`0007` are purely additive: they create tables/columns and backfill, but
 never drop or rewrite existing rows. `0005` gives every existing business a workspace, an owner
 membership and a default project whose slug equals the business slug, so legacy `/t/:slug`,
 `/wall/:slug` and embeds keep resolving. `0006` gives every widget a stable `public_id` (used by
@@ -257,14 +282,15 @@ src/
     config.js        environment parsing and validation (fails closed)
     db.js            pg pool, TLS resolution, advisory-locked migration runner
     access.js        role rules (owner/admin/manager/viewer, client scoping)
-    workspaces.js    workspaces, clients, projects, team, access helpers
+    workspaces.js    workspaces, clients, projects, team, billing state, access helpers
+    billing.js       Stripe client, price/plan mapping, subscription status rules
     widgets.js       saved widgets: list/create/update/duplicate/archive/public-by-id
     policies.js      legacy owner-only policy predicates
     repositories.js  all SQL; every scoped query is policy-checked
     auth.js          scrypt hashing, sessions, auth-gate middleware
     rateLimit.js     in-process + Postgres-backed limiters
     app.js           Express wiring, security headers, health, error handler
-    routes/          auth · account · business · workspace · content · testimonials · public
+    routes/          auth · account · business · workspace · content · testimonials · public · billing · webhooks
   client/            React SPA
   widget/            standalone embed runtime (vanilla TS, no deps)
 api/[...all].js      Vercel serverless adapter
@@ -393,20 +419,23 @@ npm run migrate        # locally, over the session pooler, before or after deplo
 | `NODE_ENV` | auto | Vercel sets `production`; that is what turns on `Secure` cookies. |
 | `PG_POOL_MAX` | recommended | Defaults to 5 in production; use 1–3 on serverless. |
 | `SUPABASE_MIGRATION_DB_URL` | **not needed** | Only `npm run migrate` and `npm run verify:deployment` read it. |
-| `APP_URL` | **not needed** | See below. |
+| `APP_URL` | **required** | Public origin used to build password-reset links, canonical URLs and the sitemap. |
+| Billing (`STRIPE_*`) | optional | All five Stripe values together enable checkout, the portal and webhooks; partial configuration refuses to boot. |
 | `ALLOWED_ORIGINS` | not needed | Same-origin is allowed automatically. |
 | `TRUST_PROXY` | not needed | Defaults to on, which is correct behind Vercel's proxy. |
 | `PORT`, `HOST` | not needed | The platform provides them. |
 | Rate limits, quota | not needed | Safe defaults are built in. |
 
-**`APP_URL` is optional metadata, not a requirement.** Nothing depends on it:
+**`APP_URL` must be set in production.** The process refuses to boot without it, and password-reset
+links are never derived from the request's `Host` header. Set it to the canonical deployment origin
+(for example `https://ravewall.example.com`); a preview deployment needs its own `APP_URL`.
 
-- **Origin protection** derives same-origin from the request's `Host` header plus
-  `ALLOWED_ORIGINS`, so it works on any domain including preview deployments.
+- **Origin protection** still compares request origins against `ALLOWED_ORIGINS` and the current
+  request host. That check is only for CSRF defence — it never supplies a URL placed in an email.
 - **Cookies** are host-only (`path: /`, no `domain`), so no absolute URL is involved.
 - **Redirects** — there are none; routing is client-side.
-- **Public links** are built in the browser from `window.location.origin`, which is why the
-  collection link and wall are correct on whatever host serves the app.
+- **Public collection links** are built in the browser from `window.location.origin`; canonical
+  wall metadata and the sitemap use `APP_URL`.
 
 ### After deploying
 
@@ -475,6 +504,7 @@ failures.
 | `api.auth.test.js` | Signup/login/logout, hashing, session integrity, gates, security headers |
 | `api.testimonials.test.js` | Full moderation flow, wall visibility, search/sort, quotas |
 | `workspace.test.js` | Workspace bootstrap, client/project lifecycle, tenant isolation, agency roles, self-escalation guards |
+| `billing.test.js` | Stripe checkout/portal, raw-body signature verification, subscription state sync, plan client limits |
 | `content.test.js` | Tags, custom questions, saved widgets, project/workspace analytics, CSV export/import |
 | `account.test.js` | Profile/email, password change ends other sessions, session revocation, account deletion guards |
 | `widgets.test.js` | Saved-widget CRUD, partial update, duplicate, archive, public by-id feed (status gating, rating/tag filters), cross-tenant isolation, manager/viewer/admin widget + moderation roles, per-client/project summaries |
